@@ -180,11 +180,14 @@ fn copies_aac_already_small_and_halves_mono() {
     let tools = Tools::locate().expect("ffmpeg on PATH");
     let dir = scratch("audio");
     let video = "testsrc2=size=320x240:rate=30:duration=3";
+    // Noise, not a tone: ffmpeg 4.4's AAC encoder put a "256k" sine at 65k,
+    // which is rightly copied. Noise spends the bitrate it is given.
+    let noise = "anoisesrc=duration=3:color=pink:amplitude=0.5";
     let small = dir.join("small aac.mp4");
     generate(
         &tools,
         &small,
-        &[video, "sine=frequency=440:duration=3"],
+        &[video, noise],
         &[
             "-c:v",
             "libx264",
@@ -201,7 +204,7 @@ fn copies_aac_already_small_and_halves_mono() {
     generate(
         &tools,
         &large,
-        &[video, "sine=frequency=440:duration=3"],
+        &[video, noise],
         &[
             "-c:v",
             "libx264",
@@ -278,8 +281,9 @@ fn deinterlaces_interlaced_footage() {
     let tools = Tools::locate().expect("ffmpeg on PATH");
     let dir = scratch("interlaced");
     // 50 fields a second woven into 25 top-field-first frames, as 1080i50
-    // from a camcorder is.
-    let clip = dir.join("camcorder 50i.mp4");
+    // from a camcorder is, and in the camcorder's MPEG-TS: ffprobe 4.4 reads
+    // the field order of H.264 there but reports it unknown inside MP4.
+    let clip = dir.join("camcorder 50i.mts");
     generate(
         &tools,
         &clip,
