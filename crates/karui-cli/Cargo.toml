@@ -1,0 +1,20 @@
+[package]
+name = "karui-cli"
+description = "Headless compress / probe / doctor for karui."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "karui"
+path = "src/main.rs"
+
+[dependencies]
+karui-core.workspace = true
+clap = { version = "4", features = ["derive"] }
+# Ctrl-C would otherwise kill ffmpeg mid-write and leave its `.part` file.
+ctrlc = "3"
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "karui-core"
+description = "Video discovery, probing, and ffmpeg compression for karui. Pure Rust, no webview."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
