@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "karui-app"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "karui-core",
  "serde",
@@ -2022,7 +2022,7 @@ dependencies = [
 
 [[package]]
 name = "karui-cli"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [[package]]
 name = "karui-core"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "serde",
  "serde_json",
