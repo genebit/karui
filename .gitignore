@@ -1,5 +1,25 @@
+/target
+/out
+/.next
+/node_modules
+*.tsbuildinfo
+next-env.d.ts
+
+# tauri build artefacts
+/src-tauri/gen
+
+# editor and OS
+/.idea
+/.vscode
+.DS_Store
+
+# local Claude Code overrides
+/.claude/settings.local.json
+
+# videos dropped in the repo while testing
 *.mp4
 *.MP4
-test.py
-maindir/
-outputdir/
+*.mov
+*.MOV
+*.mkv
+*.part

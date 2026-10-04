@@ -1,3 +1,0 @@
-sudo apt install ffmpeg
-sudo apt install python3
-sudo apt install sox
