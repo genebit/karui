@@ -5,6 +5,7 @@
 //! `.DS_Store`, and its own earlier outputs included. Each then failed or,
 //! worse, was compressed a second time.
 
+use crate::devices;
 use crate::plan::OUTPUT_SUFFIX;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -45,7 +46,8 @@ fn is_previous_output(path: &Path) -> bool {
 }
 
 /// Expand `paths` in order. Folders are read one level deep, sorted by name so
-/// a batch runs in the order a file manager shows. A file reached twice is
+/// a batch runs in the order a file manager shows, except on a camera card,
+/// where they are searched to the clips however deep the camera put them. A file reached twice is
 /// listed once.
 pub fn discover(paths: &[PathBuf]) -> Discovery {
     let mut found = Discovery::default();
@@ -58,7 +60,18 @@ pub fn discover(paths: &[PathBuf]) -> Discovery {
     };
 
     for path in paths {
-        if path.is_dir() {
+        if path.is_dir() && devices::card_of(path).is_some() {
+            // Cameras nest clips in `DCIM/100CANON` and the like, so a card,
+            // or any folder on one, is searched all the way down.
+            let files = if devices::card_of(path).as_deref() == Some(path.as_path()) {
+                devices::videos(path).into_iter().map(|v| v.path).collect()
+            } else {
+                devices::videos_under(path)
+            };
+            for file in files {
+                add(&mut found, file);
+            }
+        } else if path.is_dir() {
             let mut entries: Vec<PathBuf> = match std::fs::read_dir(path) {
                 Ok(read) => read.filter_map(|e| e.ok().map(|e| e.path())).collect(),
                 Err(e) => {

@@ -5,6 +5,7 @@
 //! knowing anything about Tauri.
 
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, PoisonError};
 use tauri::{AppHandle, Emitter};
@@ -30,19 +31,19 @@ pub struct LogLine {
 /// `setup` logs before the webview mounts its listener; without a backlog
 /// those lines would be lost.
 #[derive(Clone, Default)]
-pub struct Backlog(Arc<Mutex<Vec<LogLine>>>);
+pub struct Backlog(Arc<Mutex<VecDeque<LogLine>>>);
 
 impl Backlog {
     pub fn push(&self, line: LogLine) {
         let mut lines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if lines.len() >= BACKLOG_LIMIT {
-            lines.remove(0);
+            lines.pop_front();
         }
-        lines.push(line);
+        lines.push_back(line);
     }
 
     pub fn take(&self) -> Vec<LogLine> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner)).into()
     }
 }
 

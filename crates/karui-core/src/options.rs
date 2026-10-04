@@ -146,6 +146,8 @@ pub enum Audio {
 
 /// Transparent for speech and most music, and small next to any video stream.
 pub const AAC_BITRATE: &str = "128k";
+/// [`AAC_BITRATE`] as a number, for size estimates.
+pub const AAC_BITS_PER_SEC: u64 = 128_000;
 
 impl Audio {
     pub fn name(self) -> &'static str {
@@ -199,6 +201,9 @@ pub struct CompressOptions {
     /// `None` writes each output beside its input with
     /// [`crate::plan::OUTPUT_SUFFIX`] appended.
     pub output_dir: Option<PathBuf>,
+    /// Where files read from a camera card go when `output_dir` is `None`.
+    /// `None` takes [`crate::devices::default_import_dir`].
+    pub import_dir: Option<PathBuf>,
     /// Replace an existing file at the output path rather than numbering.
     pub overwrite: bool,
 }
@@ -206,6 +211,12 @@ pub struct CompressOptions {
 impl CompressOptions {
     pub fn crf(&self) -> u8 {
         self.crf.unwrap_or_else(|| self.codec.default_crf())
+    }
+
+    pub fn import_dir_or_default(&self) -> Option<PathBuf> {
+        self.import_dir
+            .clone()
+            .or_else(crate::devices::default_import_dir)
     }
 
     /// Reject anything ffmpeg would refuse, before a batch starts rather than

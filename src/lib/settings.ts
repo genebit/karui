@@ -11,6 +11,8 @@ export interface Settings {
   options: CompressOptions;
   /** Play the three-tone chime when a batch ends. */
   chime: boolean;
+  /** Start compressing a camera card's new videos as soon as it is inserted. */
+  autoImport: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -22,9 +24,11 @@ export const DEFAULT_SETTINGS: Settings = {
     maxResolution: null,
     audio: 'aac',
     outputDir: null,
+    importDir: null,
     overwrite: false,
   },
   chime: true,
+  autoImport: true,
 };
 
 const KEY = 'karui.settings';

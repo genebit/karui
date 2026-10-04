@@ -6,6 +6,7 @@
 use karui_core::batch::{self, Event};
 use karui_core::options::{Audio, Codec, CompressOptions};
 use karui_core::plan::{partial_path, plan};
+use karui_core::preview::{compare, fresh_dir, thumbnail, Request, Stage};
 use karui_core::probe::probe;
 use karui_core::tools::{command, Tools};
 use std::path::{Path, PathBuf};
@@ -82,6 +83,12 @@ fn compresses_a_batch_end_to_end() {
         assert!(info.fps.expect("fps") <= 30.5);
         // PCM cannot go in MP4, so "copy" fell back to AAC.
         assert_eq!(info.audio_codec.as_deref(), Some("aac"));
+        let modified = |p: &Path| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .expect("mtime")
+        };
+        assert_eq!(modified(&job.output), modified(&job.input));
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -102,4 +109,104 @@ fn a_failed_encode_leaves_no_files() {
     assert!(!jobs[0].output.exists());
     assert!(!partial_path(&jobs[0].output).exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "needs ffmpeg and ffprobe"]
+fn previews_a_sample_and_a_finished_output() {
+    let tools = Tools::locate().expect("ffmpeg on PATH");
+    let dir = scratch("preview");
+    let clip = sample(&tools, &dir, 321, 241);
+    let cancel = AtomicBool::new(false);
+    let opts = CompressOptions {
+        codec: Codec::H264,
+        crf: Some(40),
+        max_resolution: Some(120),
+        ..Default::default()
+    };
+
+    let request = Request {
+        input: clip.clone(),
+        output: None,
+        options: opts.clone(),
+        at_secs: 99.0,
+    };
+    let work = fresh_dir(&dir.join("preview")).expect("work dir");
+    let mut stages = Vec::new();
+    let sampled = compare(&tools, &request, &work, &cancel, &mut |stage| {
+        stages.push(stage)
+    })
+    .expect("sample comparison");
+    // The original is reported before the sample encode's progress.
+    assert!(matches!(stages.first(), Some(Stage::Original { .. })));
+    assert!(stages.iter().any(|s| matches!(s, Stage::Sampling { .. })));
+    assert!(!sampled.from_output);
+    // Clamped inside the two-second clip.
+    assert!(sampled.at_secs <= 1.5);
+    // Both stills at the source's size, the encode at its capped one.
+    let source = probe(&tools, &clip).expect("probe source");
+    assert_eq!((sampled.width, sampled.height), source.display_size());
+    assert_eq!(sampled.encoded_height, 120);
+    assert!(sampled.original.exists() && sampled.compressed.exists());
+    let ssim = sampled.ssim.expect("ssim");
+    assert!(ssim > 0.0 && ssim < 1.0, "ssim {ssim}");
+    assert!(sampled.rating.is_some());
+    assert!(sampled.estimated_bytes.expect("estimate") > 0);
+
+    let jobs = plan(&[clip], None, false);
+    let summary = batch::run(&tools, &jobs, &opts, &cancel, |_| {});
+    assert_eq!(summary.succeeded, 1);
+    let request = Request {
+        output: Some(jobs[0].output.clone()),
+        at_secs: 1.0,
+        ..request
+    };
+    let work = fresh_dir(&dir.join("preview")).expect("work dir");
+    let finished =
+        compare(&tools, &request, &work, &cancel, &mut |_| {}).expect("output comparison");
+    assert!(finished.from_output);
+    assert_eq!(finished.estimated_bytes, None);
+    assert_eq!(finished.video_codec, "h264");
+    assert!(finished.compressed.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "needs ffmpeg and ffprobe"]
+fn thumbnails_an_odd_sized_clip() {
+    let tools = Tools::locate().expect("ffmpeg on PATH");
+    let dir = scratch("thumbnail");
+    let clip = sample(&tools, &dir, 321, 241);
+    let info = probe(&tools, &clip).expect("probe");
+    let jpeg = thumbnail(&tools, &clip, &info).expect("thumbnail");
+    // JPEG start-of-image marker.
+    assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "needs ffmpeg and ffprobe"]
+fn benchmarks_an_encode_rate_quickly() {
+    let tools = Tools::locate().expect("ffmpeg on PATH");
+    let opts = CompressOptions {
+        codec: Codec::H264,
+        preset: karui_core::options::Preset::Veryfast,
+        ..Default::default()
+    };
+    let cancel = AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let rate = karui_core::estimate::benchmark(&tools, &opts, &cancel).expect("benchmark");
+    // Any machine that can run CI encodes 720p faster than 1 Mpx/s.
+    assert!(rate > 1e6, "rate {rate}");
+    assert!(
+        started.elapsed().as_secs() < 20,
+        "took {:?}",
+        started.elapsed()
+    );
+
+    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(matches!(
+        karui_core::estimate::benchmark(&tools, &opts, &cancel),
+        Err(karui_core::Error::Cancelled)
+    ));
 }

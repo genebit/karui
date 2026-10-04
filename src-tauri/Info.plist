@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the bundle's Info.plist by tauri build. macOS shows this
+	     when karui first reads a camera card. -->
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>karui reads videos straight from camera cards to compress them onto this Mac. Nothing is written to the card.</string>
+</dict>
+</plist>

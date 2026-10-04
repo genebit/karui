@@ -14,12 +14,16 @@
 
 pub mod args;
 pub mod batch;
+pub mod devices;
 pub mod discover;
 pub mod encode;
+pub mod estimate;
 pub mod options;
 pub mod plan;
+pub mod preview;
 pub mod probe;
 pub mod progress;
+pub mod sizing;
 pub mod tools;
 pub mod units;
 

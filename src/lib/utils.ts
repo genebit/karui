@@ -27,6 +27,19 @@ export function formatDuration(secs: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+/**
+ * A rough length of time, as people say it: `≈ 40 s`, `≈ 16 min`,
+ * `≈ 1 h 5 min`. Rounded to match how rough the estimate is.
+ */
+export function formatEstimate(secs: number): string {
+  if (secs < 55) return `≈ ${Math.max(5, Math.round(secs / 5) * 5)} s`;
+  const minutes = Math.round(secs / 60);
+  if (minutes < 60) return `≈ ${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `≈ ${h} h` : `≈ ${h} h ${m} min`;
+}
+
 /** Size change as a signed percentage, e.g. `−74%`. */
 export function formatChange(input: number, output: number): string {
   if (input === 0) return 'n/a';

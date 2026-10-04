@@ -7,6 +7,7 @@ use crate::probe::MediaInfo;
 use crate::progress::{Parser, Snapshot};
 use crate::tools::{command, Tools};
 use crate::{Error, Result};
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::Stdio;
@@ -48,13 +49,37 @@ pub fn encode(
     }
     tracing::debug!(args = ?plan.args, "starting ffmpeg");
 
+    if let Err(error) = run(tools, &plan.args, &job.input, cancel, on_progress) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
+
+    replace(&partial, &job.output)?;
+    keep_modified_time(&job.input, &job.output);
+    let output_bytes = std::fs::metadata(&job.output)?.len();
+    Ok(Outcome {
+        input_bytes: info.size_bytes,
+        output_bytes,
+        elapsed: started.elapsed(),
+    })
+}
+
+/// Run one ffmpeg encode to completion, reporting progress and stopping when
+/// `cancel` is set. Leaves whatever it wrote for the caller to keep or delete.
+pub(crate) fn run(
+    tools: &Tools,
+    args: &[OsString],
+    input: &Path,
+    cancel: &AtomicBool,
+    on_progress: &mut dyn FnMut(Snapshot),
+) -> Result<()> {
     let fail = |message: String| Error::Encode {
-        path: job.input.clone(),
+        path: input.to_path_buf(),
         message,
     };
 
     let mut child = command(&tools.ffmpeg)
-        .args(&plan.args)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -110,21 +135,13 @@ pub fn encode(
     let _ = reader.join();
     let stderr = errors.join().unwrap_or_default();
 
-    if cancelled || !status.success() {
-        let _ = std::fs::remove_file(&partial);
-        if cancelled {
-            return Err(Error::Cancelled);
-        }
+    if cancelled {
+        return Err(Error::Cancelled);
+    }
+    if !status.success() {
         return Err(fail(summarise(&stderr, &status.to_string())));
     }
-
-    replace(&partial, &job.output)?;
-    let output_bytes = std::fs::metadata(&job.output)?.len();
-    Ok(Outcome {
-        input_bytes: info.size_bytes,
-        output_bytes,
-        elapsed: started.elapsed(),
-    })
+    Ok(())
 }
 
 /// Rename over `to`. Windows refuses to rename onto an existing file, so the
@@ -137,8 +154,28 @@ fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
+/// Give the output its source's modified time, so a folder of compressed
+/// clips sorts by when they were recorded rather than when they were
+/// compressed, which for a whole card import is all the same afternoon. Best
+/// effort: a file system that refuses costs only the date.
+fn keep_modified_time(input: &Path, output: &Path) {
+    let Ok(modified) = std::fs::metadata(input).and_then(|m| m.modified()) else {
+        return;
+    };
+    let result = std::fs::File::options()
+        .write(true)
+        .open(output)
+        .and_then(|file| file.set_modified(modified));
+    if let Err(e) = result {
+        tracing::debug!(
+            "could not keep the modified time of {}: {e}",
+            output.display()
+        );
+    }
+}
+
 /// The last few lines ffmpeg wrote, which is where it says what went wrong.
-fn summarise(stderr: &str, status: &str) -> String {
+pub(crate) fn summarise(stderr: &str, status: &str) -> String {
     let lines: Vec<&str> = stderr
         .lines()
         .map(str::trim)

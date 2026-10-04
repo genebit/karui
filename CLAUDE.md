@@ -71,6 +71,10 @@ paths ─→ discover ─→ probe ─→ plan ─→ args ─→ encode ─→ 
 | `core/src/args.rs` | `MediaInfo` + `CompressOptions` → ffmpeg argv. **Pure; every flag is unit-tested.** |
 | `core/src/encode.rs` | Spawns ffmpeg, reads `-progress pipe:1`, handles cancellation, `.part` → final rename. |
 | `core/src/batch.rs` | Runs jobs one after another and emits `Event`s to a callback. Shared by the CLI and the shell. |
+| `core/src/preview.rs` | One frame before and after compression as same-size PNGs, plus SSIM/PSNR. Before a file is done, the "after" is a 24-frame sample encoded with the current settings, and the original still is reported first. Also the list's thumbnails: the keyframe a third of the way in, as a small JPEG. |
+| `core/src/estimate.rs` | Time to compress: output pixels ÷ this machine's rate for the codec and preset. Rates come from a ~3 s benchmark, then from real encodes, and are saved in the app data dir. |
+| `core/src/devices.rs` | Camera cards: finds mounted volumes with `DCIM` (or Sony/AVCHD folders), lists their videos recursively, and keeps the ledger of clips already imported. |
+| `core/src/sizing.rs` | Estimated output size: encodes three 12-frame samples with the real settings and scales them up, charging keyframes at the encoder's interval. |
 | `core/src/tools.rs` | Finds ffmpeg/ffprobe, including the locations a GUI launch does not get on `PATH`. |
 | `src-tauri/src/commands` | Argument marshalling and error mapping only. |
 | `src/lib/queue.ts` | How batch events move queue rows between states. No decisions of its own. |
@@ -98,6 +102,9 @@ paths ─→ discover ─→ probe ─→ plan ─→ args ─→ encode ─→ 
   `start_compression` does.
 - **NEVER** run encodes in parallel. libx264 and libx265 already use every
   core, so two at once only split the machine.
+- **NEVER** write to a camera card. Card files are read in place; with no
+  output folder set, `plan::plan_for` sends them to the import folder
+  (`~/Movies/karui` by default), not beside the source.
 - **NEVER** upscale or upsample. `max_fps` and `max_resolution` are caps that
   apply only when the source exceeds them.
 - **NEVER** commit on your own unless asked.
@@ -169,7 +176,7 @@ configured in CSS via `@theme` in `src/app/globals.css` (no
 `tailwind.config.js`). Components in `src/components/ui` are owned by this
 repo, so edit them directly. The app is dark-only, fixed by the `dark` class
 on `<html>`. The chrome is monochrome; colour is reserved for errors and
-warnings.
+warnings, plus green for an estimated saving.
 
 **Next.js**: static export only. No route handlers, middleware, server
 actions, or `next/image` optimisation; anything that needs a Node server breaks

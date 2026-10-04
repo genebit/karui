@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-/// Mirrored by `MediaInfo` in `src/lib/bindings.ts`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Mirrored by `MediaInfo` in `src/lib/bindings.ts`. Deserialised when the
+/// window sends probed files back for an estimate, rather than probing again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaInfo {
     /// `None` for live captures and some broken files, which then encode with
@@ -31,6 +32,10 @@ pub struct MediaInfo {
     /// carry a still image as its first "video" stream.
     pub video_stream: u32,
     pub audio_codec: Option<String>,
+    /// Bits per second of that audio stream, when the container records it.
+    /// Sizes the output when audio is copied.
+    #[serde(default)]
+    pub audio_bitrate: Option<u64>,
 }
 
 impl MediaInfo {
@@ -156,6 +161,7 @@ struct Stream {
     avg_frame_rate: Option<String>,
     r_frame_rate: Option<String>,
     duration: Option<String>,
+    bit_rate: Option<String>,
     #[serde(default)]
     disposition: Disposition,
     #[serde(default)]
@@ -227,6 +233,9 @@ pub fn parse(json: &str, size_bytes: u64) -> std::result::Result<MediaInfo, Stri
         pix_fmt: video.pix_fmt.clone(),
         video_stream: video.index,
         audio_codec: audio.map(|a| a.codec_name.clone().unwrap_or_else(|| "unknown".into())),
+        audio_bitrate: audio
+            .and_then(|a| a.bit_rate.as_deref())
+            .and_then(|b| b.parse().ok()),
     })
 }
 
@@ -306,6 +315,19 @@ mod tests {
         let json = r#"{"streams": [{"index": 0, "codec_type": "video", "width": 640, "height": 480,
             "tags": {"rotate": "270"}}]}"#;
         assert_eq!(parse(json, 0).expect("parse").rotation, 270);
+    }
+
+    #[test]
+    fn reads_the_audio_bitrate_when_recorded() {
+        let json = r#"{"streams": [
+            {"index": 0, "codec_type": "video", "codec_name": "hevc", "width": 3840, "height": 2880},
+            {"index": 1, "codec_type": "audio", "codec_name": "aac", "bit_rate": "192000"}
+        ]}"#;
+        let info = parse(json, 1).expect("parse");
+        assert_eq!(info.audio_bitrate, Some(192_000));
+        let silent =
+            r#"{"streams": [{"index": 0, "codec_type": "video", "width": 2, "height": 2}]}"#;
+        assert_eq!(parse(silent, 1).expect("parse").audio_bitrate, None);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, RotateCcw, X } from 'lucide-react';
 
@@ -82,15 +83,19 @@ function toNumber(value: string): number | null {
   return value === 'source' ? null : Number(value);
 }
 
-export function SettingsPanel({
+/** Memoised: its props change only when the settings or tool status do. */
+export const SettingsPanel = memo(function SettingsPanel({
   settings,
   tools,
   disabled,
+  defaultImport,
   onChange,
 }: {
   settings: Settings;
   tools: ToolStatus | null;
   disabled: boolean;
+  /** Where card videos go when no import folder is chosen. */
+  defaultImport: string | null;
   onChange: (next: Settings) => void;
 }) {
   const options = settings.options;
@@ -98,10 +103,11 @@ export function SettingsPanel({
     onChange({ ...settings, options: { ...options, ...patch } });
   const crf = options.crf ?? defaultCrf(options.codec);
 
-  const pickFolder = async () => {
+  const pickFolder = async (field: 'outputDir' | 'importDir') => {
     const picked = await openDialog({ directory: true, multiple: false });
-    if (typeof picked === 'string') set({ outputDir: picked });
+    if (typeof picked === 'string') set({ [field]: picked });
   };
+  const importDir = options.importDir ?? defaultImport;
 
   return (
     <div className="space-y-5 px-3 py-3">
@@ -256,7 +262,7 @@ export function SettingsPanel({
             variant="outline"
             size="sm"
             disabled={disabled}
-            onClick={() => void pickFolder()}
+            onClick={() => void pickFolder('outputDir')}
             className="min-w-0 flex-1 justify-start"
             title={options.outputDir ?? undefined}
           >
@@ -284,6 +290,46 @@ export function SettingsPanel({
         </p>
       </Field>
 
+      <Field label="Camera cards">
+        <div className="flex items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={disabled || options.outputDir !== null}
+            onClick={() => void pickFolder('importDir')}
+            className="min-w-0 flex-1 justify-start"
+            title={importDir ?? undefined}
+          >
+            <FolderOpen />
+            <span className="truncate">{importDir ? baseName(importDir) : 'Choose a folder'}</span>
+          </Button>
+          {options.importDir && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={disabled}
+              onClick={() => set({ importDir: null })}
+              aria-label="Use the default import folder"
+            >
+              <X />
+            </Button>
+          )}
+        </div>
+        <p className="text-muted-foreground text-[10.5px] leading-snug">
+          {options.outputDir
+            ? 'Card videos go to the Save to folder above.'
+            : 'Read straight from the card and saved here, never back to the card.'}
+        </p>
+        <label className="flex items-center justify-between gap-2 pt-1 text-xs">
+          <span>Compress new cards automatically</span>
+          <Switch
+            size="sm"
+            checked={settings.autoImport}
+            onCheckedChange={(autoImport) => onChange({ ...settings, autoImport })}
+          />
+        </label>
+      </Field>
+
       <div className="space-y-3">
         <label className="flex items-center justify-between gap-2 text-xs">
           <span>Replace existing outputs</span>
@@ -305,4 +351,4 @@ export function SettingsPanel({
       </div>
     </div>
   );
-}
+});

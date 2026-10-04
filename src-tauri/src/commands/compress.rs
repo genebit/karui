@@ -1,11 +1,12 @@
 use crate::error::Result;
-use crate::state::{RunGuard, Runner};
-use karui_core::batch;
+use crate::state::{CardLedger, RateStore, RunGuard, Runner, Sidework};
+use karui_core::batch::{self, Event};
+use karui_core::devices::card_of;
 use karui_core::options::CompressOptions;
-use karui_core::plan::plan;
+use karui_core::plan::plan_for;
 use karui_core::tools::Tools;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
@@ -28,11 +29,15 @@ pub fn start_compression(
     paths: Vec<PathBuf>,
     options: CompressOptions,
     runner: State<'_, Arc<Runner>>,
+    sidework: State<'_, Arc<Sidework>>,
+    rates: State<'_, Arc<RateStore>>,
+    ledger: State<'_, Arc<CardLedger>>,
 ) -> Result<Vec<PlannedJob>> {
     options.validate()?;
     let tools = Tools::locate()?;
-    let jobs = plan(&paths, options.output_dir.as_deref(), options.overwrite);
+    let jobs = plan_for(&paths, &options);
     let cancel = runner.begin()?;
+    sidework.cancel();
     let guard = RunGuard(runner.inner().clone());
 
     let planned = jobs
@@ -43,9 +48,25 @@ pub fn start_compression(
         })
         .collect();
 
+    let (rates, ledger) = (rates.inner().clone(), ledger.inner().clone());
     std::thread::spawn(move || {
         let _guard = guard;
         batch::run(&tools, &jobs, &options, &cancel, |event| {
+            // Each real encode sharpens the estimates for the files after it.
+            if let Event::Finished {
+                input,
+                pixels_per_sec,
+                ..
+            } = &event
+            {
+                if let Some(rate) = *pixels_per_sec {
+                    rates.update(|r| r.record_encode(options.codec, options.preset, rate));
+                }
+                // So the card offers only newer clips next time.
+                if card_of(Path::new(input)).is_some() {
+                    ledger.record(Path::new(input));
+                }
+            }
             let _ = app.emit(COMPRESS_EVENT, event);
         });
     });

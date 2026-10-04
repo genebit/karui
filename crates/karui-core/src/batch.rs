@@ -11,7 +11,7 @@ use crate::options::CompressOptions;
 use crate::plan::Job;
 use crate::probe::probe;
 use crate::tools::Tools;
-use crate::{units, Error};
+use crate::{estimate, units, Error};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -47,6 +47,9 @@ pub enum Event {
         input_bytes: u64,
         output_bytes: u64,
         elapsed_secs: f64,
+        /// The encode rate this file achieved, for future estimates. `None`
+        /// when it was too short to say.
+        pixels_per_sec: Option<f64>,
     },
     Failed {
         index: usize,
@@ -104,7 +107,7 @@ pub fn run(
 
         let result = probe(tools, &job.input).and_then(|info| {
             let duration = info.duration_secs;
-            encode(tools, job, &info, opts, cancel, &mut |snapshot| {
+            let outcome = encode(tools, job, &info, opts, cancel, &mut |snapshot| {
                 on_event(Event::Progress {
                     index,
                     input: input.clone(),
@@ -113,11 +116,13 @@ pub fn run(
                     eta_secs: snapshot.eta_secs(duration),
                     out_time_secs: snapshot.out_time_secs,
                 });
-            })
+            })?;
+            let rate = estimate::learnt(&info, opts, outcome.elapsed.as_secs_f64());
+            Ok((outcome, rate))
         });
 
         match result {
-            Ok(outcome) => {
+            Ok((outcome, pixels_per_sec)) => {
                 summary.succeeded += 1;
                 summary.input_bytes += outcome.input_bytes;
                 summary.output_bytes += outcome.output_bytes;
@@ -130,6 +135,7 @@ pub fn run(
                     input_bytes: outcome.input_bytes,
                     output_bytes: outcome.output_bytes,
                     elapsed_secs: outcome.elapsed.as_secs_f64(),
+                    pixels_per_sec,
                 });
                 tracing::info!(
                     "{name}: {} → {} ({}) in {}",

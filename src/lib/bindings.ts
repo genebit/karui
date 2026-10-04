@@ -31,8 +31,13 @@ export interface CompressOptions {
   /** Ceiling on the shorter side, so 720 means 720p in either orientation. */
   maxResolution: number | null;
   audio: Audio;
-  /** `null` writes each output beside its source as `<name>-compressed.mp4`. */
+  /**
+   * `null` writes each output beside its source as `<name>-compressed.mp4`,
+   * except files on a camera card, which go to `importDir`.
+   */
   outputDir: string | null;
+  /** Where camera card files go without `outputDir`. `null` is `defaultImport()`. */
+  importDir: string | null;
   overwrite: boolean;
 }
 
@@ -50,6 +55,8 @@ export interface MediaInfo {
   pixFmt: string | null;
   videoStream: number;
   audioCodec: string | null;
+  /** Bits per second of the audio stream, when recorded. */
+  audioBitrate: number | null;
 }
 
 /** `commands::queue::QueueItem`. */
@@ -80,6 +87,69 @@ export interface ToolStatus {
   ffprobe: string;
   version: string;
   encoders: Codec[];
+}
+
+/** `karui_core::preview::Rating`: a plain-language reading of SSIM. */
+export type Rating = 'transparent' | 'slight' | 'noticeable' | 'heavy';
+
+/** `karui_core::preview::Stage`: progress while a comparison is made. */
+export type PreviewStage =
+  | {
+      type: 'original';
+      atSecs: number;
+      width: number;
+      height: number;
+      /** PNG path, read with `previewImage`. */
+      original: string;
+    }
+  /** The sample encode, from 0 to 1. */
+  | { type: 'sampling'; fraction: number };
+
+/** `karui_core::preview::Comparison`. */
+export interface Comparison {
+  /** The moment compared, after clamping to the file's length. */
+  atSecs: number;
+  /** Both stills share these dimensions. */
+  width: number;
+  height: number;
+  /** PNG paths, read with `previewImage`. */
+  original: string;
+  compressed: string;
+  /** `compressed` came from the finished output, not a sample encode. */
+  fromOutput: boolean;
+  encodedWidth: number;
+  encodedHeight: number;
+  videoCodec: string;
+  ssim: number | null;
+  /** dB. `null` for identical frames. */
+  psnr: number | null;
+  rating: Rating | null;
+  /** Whole-file size at the sample's bitrate. Samples only. */
+  estimatedBytes: number | null;
+  notes: string[];
+}
+
+/** `karui_core::estimate::Basis`: a benchmark, or learnt from real encodes. */
+export type Basis = 'benchmark' | 'measured';
+
+/** `commands::estimate::Estimates`. */
+export interface Estimates {
+  /** Seconds per item, in the order sent. `null` where it cannot be known. */
+  secs: (number | null)[];
+  /** `null` when there is no rate for these settings yet. */
+  basis: Basis | null;
+}
+
+/** `karui_core::devices::CardSummary`: a mounted camera card. */
+export interface CardSummary {
+  /** The volume's mount point, e.g. `/Volumes/Untitled`. */
+  root: string;
+  name: string;
+  videos: number;
+  bytes: number;
+  /** Videos never imported before, in recording order. */
+  fresh: string[];
+  freshBytes: number;
 }
 
 /** `karui_core::batch::Summary`. Byte totals cover successful jobs only. */
@@ -113,6 +183,8 @@ export type CompressEvent =
       inputBytes: number;
       outputBytes: number;
       elapsedSecs: number;
+      /** The encode rate achieved, which the backend learns from. */
+      pixelsPerSec: number | null;
     }
   | { type: 'failed'; index: number; input: string; message: string }
   | { type: 'cancelled'; index: number; input: string }

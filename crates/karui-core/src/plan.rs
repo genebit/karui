@@ -5,6 +5,8 @@
 //! wrote `<folder>/../Output/<same name>`: re-running it made ffmpeg stop and
 //! wait on an `Overwrite? [y/N]` prompt nobody could see.
 
+use crate::devices;
+use crate::options::CompressOptions;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -47,7 +49,30 @@ fn identity(path: &Path) -> String {
     resolved.to_string_lossy().to_lowercase()
 }
 
+/// The plan for a run with `opts`. Files on a camera card go to the import
+/// folder when no output folder is set, rather than back onto the card.
+pub fn plan_for(inputs: &[PathBuf], opts: &CompressOptions) -> Vec<Job> {
+    let import_dir = opts.import_dir_or_default();
+    route(
+        inputs,
+        opts.output_dir.as_deref(),
+        import_dir.as_deref(),
+        opts.overwrite,
+        |input| devices::card_of(input).is_some(),
+    )
+}
+
 pub fn plan(inputs: &[PathBuf], output_dir: Option<&Path>, overwrite: bool) -> Vec<Job> {
+    route(inputs, output_dir, None, overwrite, |_| false)
+}
+
+fn route(
+    inputs: &[PathBuf],
+    output_dir: Option<&Path>,
+    import_dir: Option<&Path>,
+    overwrite: bool,
+    on_card: impl Fn(&Path) -> bool,
+) -> Vec<Job> {
     let mut claimed: HashSet<String> = inputs.iter().map(|p| identity(p)).collect();
 
     inputs
@@ -57,7 +82,8 @@ pub fn plan(inputs: &[PathBuf], output_dir: Option<&Path>, overwrite: bool) -> V
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "video".into());
-            let (dir, base) = match output_dir {
+            let dir = output_dir.or_else(|| import_dir.filter(|_| on_card(input)));
+            let (dir, base) = match dir {
                 Some(dir) => (dir.to_path_buf(), stem),
                 None => (
                     input.parent().map(Path::to_path_buf).unwrap_or_default(),
@@ -154,6 +180,30 @@ mod tests {
         let replaced = plan(&[input], None, true);
         assert_eq!(replaced[0].output, dir.join("clip-compressed.mp4"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn card_files_go_to_the_import_folder_unless_an_output_folder_is_set() {
+        let card = Path::new("/Volumes/Untitled");
+        let inputs = [
+            card.join("DCIM/Camera01/VID_1.mp4"),
+            PathBuf::from("/home/me/clip.mov"),
+        ];
+        let import = PathBuf::from("/nonexistent-karui-import");
+        let on_card = |p: &Path| p.starts_with(card);
+
+        let jobs = route(&inputs, None, Some(&import), false, on_card);
+        // Named as in any output folder: the camera's name, no suffix.
+        assert_eq!(jobs[0].output, import.join("VID_1.mp4"));
+        assert_eq!(
+            jobs[1].output,
+            PathBuf::from("/home/me/clip-compressed.mp4")
+        );
+
+        let chosen = PathBuf::from("/nonexistent-karui-out");
+        let jobs = route(&inputs, Some(&chosen), Some(&import), false, on_card);
+        assert_eq!(jobs[0].output, chosen.join("VID_1.mp4"));
+        assert_eq!(jobs[1].output, chosen.join("clip.mp4"));
     }
 
     #[test]

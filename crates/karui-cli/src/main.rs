@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use karui_core::batch::{self, Event};
 use karui_core::discover::discover;
 use karui_core::options::{Audio, Codec, CompressOptions, Preset};
-use karui_core::plan::plan;
+use karui_core::plan::plan_for;
 use karui_core::probe::probe;
 use karui_core::tools::{install_hint, Tools};
 use karui_core::units;
@@ -25,15 +25,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Compress videos. Folders are read one level deep.
+    /// Compress videos. Folders are read one level deep; a camera card or a
+    /// folder on one is searched all the way down.
     Compress {
         #[arg(required = true)]
         input: Vec<PathBuf>,
 
         /// Write every output here. Without it, each output goes beside its
-        /// source as `<name>-compressed.mp4`.
+        /// source as `<name>-compressed.mp4`, except files on a camera card.
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// Where files on a camera card go without --output. Defaults to
+        /// karui in your Movies (macOS) or Videos folder.
+        #[arg(long)]
+        import_dir: Option<PathBuf>,
 
         /// h264 or h265.
         #[arg(long, default_value_t = Codec::default())]
@@ -116,6 +122,7 @@ fn run(command: Command) -> karui_core::Result<ExitCode> {
             max_fps,
             max_res,
             audio,
+            import_dir,
             overwrite,
             bell,
         } => {
@@ -127,6 +134,7 @@ fn run(command: Command) -> karui_core::Result<ExitCode> {
                 max_resolution: max_res,
                 audio,
                 output_dir: output,
+                import_dir,
                 overwrite,
             };
             opts.validate()?;
@@ -196,7 +204,7 @@ fn compress(
         let _ = ctrlc::set_handler(move || cancel.store(true, Ordering::Relaxed));
     }
 
-    let jobs = plan(&found.files, opts.output_dir.as_deref(), opts.overwrite);
+    let jobs = plan_for(&found.files, opts);
     let mut stderr = std::io::stderr();
     let summary = batch::run(tools, &jobs, opts, &cancel, |event| match event {
         Event::Started {
