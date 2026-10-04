@@ -10,8 +10,10 @@ const nextConfig: NextConfig = {
   // run. This repo's CLAUDE.md is hand-written and covers the whole workspace,
   // not just the frontend.
   agentRules: false,
+  // The export lands in `out/`, which Tauri embeds into the binary. Next's
+  // own working files, including `next dev`'s tens of megabytes, stay in
+  // `.next/`; with `distDir: 'out'` they were embedded too.
   output: 'export',
-  distDir: 'out',
   images: { unoptimized: true },
   // Tauri loads pages over a custom protocol where directory indexes do not
   // resolve, so emit `index.html` files rather than extensionless routes.
