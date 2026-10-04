@@ -141,6 +141,9 @@ pub fn measure(
     cancel: &AtomicBool,
 ) -> Result<u64> {
     opts.validate()?;
+    // Sized with the encoder that will do the work: hardware encoders
+    // spend bits differently.
+    let opts = &opts.resolved(tools)?;
     let (Some(duration), Some(work)) = (info.duration_secs, work(info, opts)) else {
         return Err(Error::Invalid("the length of this video is unknown".into()));
     };

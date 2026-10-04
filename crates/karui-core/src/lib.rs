@@ -18,6 +18,7 @@ pub mod devices;
 pub mod discover;
 pub mod encode;
 pub mod estimate;
+pub mod hardware;
 pub mod options;
 pub mod plan;
 pub mod preview;

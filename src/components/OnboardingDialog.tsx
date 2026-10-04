@@ -107,9 +107,10 @@ export function OnboardingDialog({
             compress in.
           </Step>
           <Step icon={<SlidersHorizontal />} title="Choose settings">
-            H.265 makes the smallest files; H.264 plays on anything. Each file then shows
-            about how long it will take and, in green, how much smaller it should come
-            out.
+            H.265 makes the smallest files; H.264 plays on anything. Choose Hardware to
+            encode on the graphics chip instead: many times faster, with somewhat larger
+            files. Each file then shows about how long it will take and, in green, how
+            much smaller it should come out.
           </Step>
           <Step icon={<Eye />} title="Check the quality">
             Click a file to compare one frame before and after, side by side, before you
@@ -127,10 +128,10 @@ export function OnboardingDialog({
           <Cpu className="text-muted-foreground mt-0.5 size-4 shrink-0" />
           <p className="text-muted-foreground text-xs leading-relaxed">
             <span className="text-foreground font-medium">Runs on your computer.</span>{' '}
-            Nothing is uploaded: compression uses this computer&apos;s own processor, so
-            how fast it goes depends on its specs and on what else it is doing. Times and
-            sizes shown are estimates measured on this machine, and get closer as you
-            compress more.
+            Nothing is uploaded: compression uses this computer&apos;s own processor, or
+            its graphics chip if you choose Hardware, so how fast it goes depends on its
+            specs and on what else it is doing. Times and sizes shown are estimates
+            measured on this machine, and get closer as you compress more.
           </p>
         </div>
 

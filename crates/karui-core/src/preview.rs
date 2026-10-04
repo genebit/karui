@@ -166,17 +166,13 @@ pub fn compare(
             (output.clone(), at, encoded, Vec::new(), None)
         }
         None => {
-            let (lead, secs) = sample_span(&info, &request.options);
+            // The chosen encoder, hardware included, so the sample shows
+            // what the real encode will.
+            let options = request.options.resolved(tools)?;
+            let (lead, secs) = sample_span(&info, &options);
             let start = (at - lead).max(0.0);
             let sample = dir.join("sample.mp4");
-            let plan = sample_args(
-                &request.input,
-                &sample,
-                &info,
-                &request.options,
-                start,
-                secs,
-            );
+            let plan = sample_args(&request.input, &sample, &info, &options, start, secs);
             tracing::debug!(args = ?plan.args, "encoding preview sample");
             encode::run(tools, &plan.args, &request.input, cancel, &mut |snapshot| {
                 if let Some(fraction) = snapshot.fraction(Some(secs)) {

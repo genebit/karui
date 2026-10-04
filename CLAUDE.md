@@ -75,6 +75,7 @@ paths ─→ discover ─→ probe ─→ plan ─→ args ─→ encode ─→ 
 | `core/src/estimate.rs` | Time to compress: output pixels ÷ this machine's rate for the codec and preset. Rates come from a ~3 s benchmark, then from real encodes, and are saved in the app data dir. |
 | `core/src/devices.rs` | Camera cards: finds mounted volumes with `DCIM` (or Sony/AVCHD folders), lists their videos recursively, and keeps the ledger of clips already imported. |
 | `core/src/sizing.rs` | Estimated output size: encodes three 12-frame samples with the real settings and scales them up, charging keyframes at the encoder's interval. |
+| `core/src/hardware.rs` | Hardware encoders: VideoToolbox (macOS), VA-API (Linux AMD/Intel), NVENC, AMF, Quick Sync. Probes each with a real encode once per run and keeps the first that works. |
 | `core/src/tools.rs` | Finds ffmpeg/ffprobe, including the locations a GUI launch does not get on `PATH`. |
 | `src-tauri/src/commands` | Argument marshalling and error mapping only. |
 | `src/lib/queue.ts` | How batch events move queue rows between states. No decisions of its own. |
@@ -125,6 +126,7 @@ paths ─→ discover ─→ probe ─→ plan ─→ args ─→ encode ─→ 
 | 10-bit / HDR | Keep `yuv420p10le` for H.265. H.264 gets 8-bit `yuv420p` and a note. |
 | Audio copy | Only codecs MP4 can carry (`args::MP4_AUDIO`). Anything else is re-encoded to AAC with a note. |
 | Cover art | Map the probed `video_stream` index, never `0:v:0`; an attached picture can be stream 0. |
+| Hardware encoding | Only the encoder moves to hardware; decode and filters stay on the CPU (VideoToolbox decode plus a download was 5× slower). Probe with a real encode, since `-encoders` lists AMF and QSV without drivers. VA-API needs `-vaapi_device` before `-i` and `format=nv12,hwupload` last in `-vf`. Quality maps from the CRF slider: VideoToolbox `-q:v` was calibrated on an M2 to match x265's SSIM; the GPU QP mapping is a first guess. |
 | Progress | `-progress pipe:1 -nostats`. `out_time_ms` is actually microseconds. Emit only on `progress=`. |
 | Pipes | Drain stdout and stderr on separate threads, or ffmpeg deadlocks on a full stderr pipe. |
 | stdin | `-nostdin` and `Stdio::null()`. ffmpeg otherwise reads the terminal for `q`. |

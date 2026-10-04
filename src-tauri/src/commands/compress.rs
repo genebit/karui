@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use crate::state::{CardLedger, RateStore, RunGuard, Runner, Sidework};
 use karui_core::batch::{self, Event};
 use karui_core::devices::card_of;
@@ -23,8 +23,11 @@ pub struct PlannedJob {
 
 /// Plan the batch, start it on its own thread, and return the plan at once.
 /// Progress arrives as `compress://event`.
+///
+/// Async: planning checks every output path, and resolving a hardware
+/// encoder can probe it, neither of which belongs on the main thread.
 #[tauri::command]
-pub fn start_compression(
+pub async fn start_compression(
     app: AppHandle,
     paths: Vec<PathBuf>,
     options: CompressOptions,
@@ -34,8 +37,17 @@ pub fn start_compression(
     ledger: State<'_, Arc<CardLedger>>,
 ) -> Result<Vec<PlannedJob>> {
     options.validate()?;
-    let tools = Tools::locate()?;
-    let jobs = plan_for(&paths, &options);
+    let (tools, options, jobs) = tauri::async_runtime::spawn_blocking(move || {
+        let tools = Tools::locate()?;
+        let options = options.resolved(&tools)?;
+        let jobs = plan_for(&paths, &options);
+        Ok::<_, AppError>((tools, options, jobs))
+    })
+    .await
+    .map_err(|e| AppError::Invalid(e.to_string()))??;
+    if let Some(hw) = options.hardware() {
+        tracing::info!("Encoding on {}", hw.name);
+    }
     let cancel = runner.begin()?;
     sidework.cancel();
     let guard = RunGuard(runner.inner().clone());
@@ -60,7 +72,7 @@ pub fn start_compression(
             } = &event
             {
                 if let Some(rate) = *pixels_per_sec {
-                    rates.update(|r| r.record_encode(options.codec, options.preset, rate));
+                    rates.update(|r| r.record_encode(&options, rate));
                 }
                 // So the card offers only newer clips next time.
                 if card_of(Path::new(input)).is_some() {

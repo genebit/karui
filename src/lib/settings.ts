@@ -18,6 +18,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   options: {
     codec: 'h265',
+    engine: 'software',
     crf: null,
     preset: 'medium',
     maxFps: null,

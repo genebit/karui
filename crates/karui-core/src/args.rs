@@ -3,7 +3,8 @@
 //! Pure: everything an encode needs to decide is known from the probe and the
 //! options, so every flag here is unit-tested without running ffmpeg.
 
-use crate::options::{Audio, Codec, CompressOptions, AAC_BITRATE};
+use crate::hardware::{Backend, Hardware};
+use crate::options::{Audio, Codec, CompressOptions, Engine, Preset, AAC_BITRATE};
 use crate::probe::{file_url, MediaInfo};
 use std::ffi::OsString;
 use std::path::Path;
@@ -213,6 +214,21 @@ fn build(
             "-y",
         ],
     );
+    let ten_bit = info
+        .pix_fmt
+        .as_deref()
+        .is_some_and(|f| f.contains("10le") || f.contains("10be"));
+    // Keeps an iPhone's HDR footage HDR. 8-bit would band visibly.
+    let keep_ten_bit = ten_bit && opts.codec == Codec::H265;
+    if ten_bit && !keep_ten_bit {
+        notes.push("10-bit source reduced to 8-bit: H.264 players rarely decode 10-bit".into());
+    }
+    if opts.engine == Engine::Hardware && opts.hardware().is_none() {
+        notes.push("no hardware encoder was set up, so this was encoded in software".into());
+    }
+    let video = video_args(opts, keep_ten_bit);
+    args.extend(video.global.iter().map(OsString::from));
+
     if let Some((start, secs)) = clip {
         // Before `-i`, so ffmpeg seeks the input instead of decoding up to
         // `start` and throwing the frames away.
@@ -228,46 +244,10 @@ fn build(
         push(&mut args, &["-map", "0:a?"]);
     }
 
-    let crf = opts.crf().to_string();
-    push(
-        &mut args,
-        &[
-            "-c:v",
-            opts.codec.encoder(),
-            "-preset",
-            opts.preset.name(),
-            "-crf",
-            &crf,
-        ],
-    );
+    args.extend(video.codec.iter().map(OsString::from));
 
-    if opts.codec == Codec::H265 {
-        // Without `hvc1` QuickTime, Safari, and iOS refuse to play H.265 in
-        // MP4 at all; ffmpeg's default tag is `hev1`.
-        push(
-            &mut args,
-            &["-tag:v", "hvc1", "-x265-params", "log-level=error"],
-        );
-    }
-
-    let ten_bit = info
-        .pix_fmt
-        .as_deref()
-        .is_some_and(|f| f.contains("10le") || f.contains("10be"));
-    let pix_fmt = if ten_bit && opts.codec == Codec::H265 {
-        // Keeps an iPhone's HDR footage HDR. 8-bit would band visibly.
-        "yuv420p10le"
-    } else {
-        if ten_bit {
-            notes.push("10-bit source reduced to 8-bit: H.264 players rarely decode 10-bit".into());
-        }
-        // Screen recorders often produce 4:4:4, which most players cannot
-        // decode in H.264.
-        "yuv420p"
-    };
-    push(&mut args, &["-pix_fmt", pix_fmt]);
-
-    let filters = video_filters(info, opts);
+    let mut filters = video_filters(info, opts);
+    filters.extend(video.upload);
     if !filters.is_empty() {
         let chain = filters.join(",");
         push(&mut args, &["-vf", &chain]);
@@ -294,6 +274,211 @@ fn build(
     args.push(file_url(output));
 
     EncodePlan { args, notes }
+}
+
+/// The encoder's share of an ffmpeg command. Real encodes, preview and size
+/// samples, the speed benchmark, and the hardware probe all build theirs
+/// here, so none of them can measure a different encoder from the one used.
+pub(crate) struct VideoArgs {
+    /// Before the input: a device to open.
+    pub global: Vec<String>,
+    /// The encoder and its settings, after the filters.
+    pub codec: Vec<String>,
+    /// A last filter that moves frames into the encoder's own memory.
+    pub upload: Option<String>,
+}
+
+pub(crate) fn video_args(opts: &CompressOptions, ten_bit: bool) -> VideoArgs {
+    let hevc = opts.codec == Codec::H265;
+    let Some(hw) = opts.hardware() else {
+        let crf = opts.crf().to_string();
+        let mut codec = strings(&[
+            "-c:v",
+            opts.codec.encoder(),
+            "-preset",
+            opts.preset.name(),
+            "-crf",
+            &crf,
+        ]);
+        if hevc {
+            // Without `hvc1` QuickTime, Safari, and iOS refuse to play H.265
+            // in MP4 at all; ffmpeg's default tag is `hev1`.
+            codec.extend(strings(&[
+                "-tag:v",
+                "hvc1",
+                "-x265-params",
+                "log-level=error",
+            ]));
+        }
+        // Screen recorders often produce 4:4:4, which most players cannot
+        // decode in H.264.
+        let pix_fmt = if ten_bit { "yuv420p10le" } else { "yuv420p" };
+        codec.extend(strings(&["-pix_fmt", pix_fmt]));
+        return VideoArgs {
+            global: Vec::new(),
+            codec,
+            upload: None,
+        };
+    };
+
+    let qp = hardware_qp(opts).to_string();
+    let mut codec = strings(&["-c:v", hw.backend.encoder(opts.codec)]);
+    let mut global = Vec::new();
+    let mut upload = None;
+    match hw.backend {
+        Backend::Videotoolbox => {
+            let q = videotoolbox_quality(opts).to_string();
+            codec.extend(strings(&["-q:v", &q]));
+        }
+        Backend::Vaapi => {
+            if let Some(device) = &hw.device {
+                global = vec!["-vaapi_device".into(), device.display().to_string()];
+            }
+            // Decoding and scaling stay on the CPU; the frames are handed to
+            // the GPU last, in the layout its encoder reads.
+            let layout = if ten_bit { "p010" } else { "nv12" };
+            upload = Some(format!("format={layout},hwupload"));
+            codec.extend(strings(&["-rc_mode", "CQP", "-qp", &qp]));
+        }
+        Backend::Nvenc => codec.extend(strings(&[
+            "-preset",
+            nvenc_preset(opts.preset),
+            "-rc",
+            "vbr",
+            "-cq",
+            &qp,
+            "-b:v",
+            "0",
+        ])),
+        Backend::Amf => {
+            codec.extend(strings(&[
+                "-quality",
+                amf_quality(opts.preset),
+                "-rc",
+                "cqp",
+                "-qp_i",
+                &qp,
+                "-qp_p",
+                &qp,
+            ]));
+            if !hevc {
+                codec.extend(strings(&["-qp_b", &qp]));
+            }
+        }
+        Backend::Qsv => codec.extend(strings(&[
+            "-preset",
+            qsv_preset(opts.preset),
+            "-global_quality",
+            &qp,
+        ])),
+    }
+    if ten_bit {
+        codec.extend(strings(&["-profile:v", "main10"]));
+    }
+    if hevc {
+        codec.extend(strings(&["-tag:v", "hvc1"]));
+    }
+    if hw.backend != Backend::Vaapi {
+        // The layout every one of these encoders reads natively.
+        codec.extend(strings(&[
+            "-pix_fmt",
+            if ten_bit { "p010le" } else { "nv12" },
+        ]));
+    }
+    VideoArgs {
+        global,
+        codec,
+        upload,
+    }
+}
+
+/// The CRF on x265's scale: x264 at 23 looks about like x265 at 28.
+fn hevc_scale_crf(opts: &CompressOptions) -> i32 {
+    let crf = i32::from(opts.crf());
+    if opts.codec == Codec::H264 {
+        crf + 5
+    } else {
+        crf
+    }
+}
+
+/// VideoToolbox's `-q:v` runs 1–100, higher being better. Measured on an
+/// M2 against 4K HDR footage, q 44 matched x265's SSIM at CRF 28 (0.985)
+/// at about 1.6 times the size, and every 8 points of q roughly doubled the
+/// size, as 6 points of CRF do. So the default lands on 44, and each step of
+/// the slider moves q by 1.25: the slider means the same look either way.
+fn videotoolbox_quality(opts: &CompressOptions) -> u8 {
+    (79.0 - 1.25 * f64::from(hevc_scale_crf(opts)))
+        .round()
+        .clamp(1.0, 100.0) as u8
+}
+
+/// A constant QP for the GPU encoders, on the codec's own 0–51 scale. A few
+/// steps below the CRF: a hardware encoder spends its bits less cleverly,
+/// and needs a finer quantizer to reach the same look.
+fn hardware_qp(opts: &CompressOptions) -> u8 {
+    (i32::from(opts.crf()) - 3).clamp(1, 51) as u8
+}
+
+/// NVENC's presets run `p1` (fastest) to `p7` (best).
+fn nvenc_preset(preset: Preset) -> &'static str {
+    match preset {
+        Preset::Ultrafast | Preset::Superfast => "p1",
+        Preset::Veryfast => "p2",
+        Preset::Faster => "p3",
+        Preset::Fast => "p4",
+        Preset::Medium => "p5",
+        Preset::Slow => "p6",
+        Preset::Slower | Preset::Veryslow => "p7",
+    }
+}
+
+fn amf_quality(preset: Preset) -> &'static str {
+    match preset {
+        Preset::Ultrafast | Preset::Superfast | Preset::Veryfast | Preset::Faster => "speed",
+        Preset::Fast | Preset::Medium => "balanced",
+        Preset::Slow | Preset::Slower | Preset::Veryslow => "quality",
+    }
+}
+
+/// Quick Sync takes x264's names, from `veryfast` up.
+fn qsv_preset(preset: Preset) -> &'static str {
+    match preset {
+        Preset::Ultrafast | Preset::Superfast => "veryfast",
+        other => other.name(),
+    }
+}
+
+/// A few frames of a test pattern to nowhere, with exactly the arguments a
+/// real encode would use, to find out whether a hardware encoder works.
+pub(crate) fn probe_args(hw: &Hardware, codec: Codec) -> Vec<OsString> {
+    let opts = CompressOptions {
+        codec,
+        engine: Engine::Hardware,
+        hardware: Some(hw.clone()),
+        ..Default::default()
+    };
+    let video = video_args(&opts, false);
+    let mut args = strings(&["-hide_banner", "-nostdin", "-loglevel", "error"]);
+    args.extend(video.global);
+    args.extend(strings(&[
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc2=size=320x240:rate=30",
+        "-frames:v",
+        "5",
+    ]));
+    if let Some(upload) = video.upload {
+        args.extend(["-vf".to_string(), upload]);
+    }
+    args.extend(video.codec);
+    args.extend(strings(&["-f", "null", "-"]));
+    args.into_iter().map(OsString::from).collect()
+}
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| s.to_string()).collect()
 }
 
 fn push(args: &mut Vec<OsString>, items: &[&str]) {
@@ -655,6 +840,106 @@ mod tests {
         };
         assert_eq!(fps_cap(&ntsc, &opts), None);
         assert_eq!(fps_cap(&info(), &CompressOptions::default()), None);
+    }
+
+    fn hardware(backend: Backend) -> CompressOptions {
+        CompressOptions {
+            engine: Engine::Hardware,
+            hardware: Some(Hardware {
+                backend,
+                name: "test".into(),
+                codecs: vec![Codec::H264, Codec::H265],
+                device: (backend == Backend::Vaapi).then(|| "/dev/dri/renderD128".into()),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn videotoolbox_encodes_on_the_media_engine() {
+        let args = joined(&run(&info(), &hardware(Backend::Videotoolbox)));
+        assert!(args.contains("-c:v hevc_videotoolbox -q:v 44 -tag:v hvc1 -pix_fmt nv12"));
+        assert!(!args.contains("libx265") && !args.contains("-crf"));
+        // Better quality on the slider is a higher q.
+        let finer = CompressOptions {
+            crf: Some(20),
+            ..hardware(Backend::Videotoolbox)
+        };
+        assert!(joined(&run(&info(), &finer)).contains("-q:v 54"));
+    }
+
+    #[test]
+    fn vaapi_opens_the_device_and_uploads_after_the_filters() {
+        let opts = CompressOptions {
+            max_resolution: Some(1080),
+            ..hardware(Backend::Vaapi)
+        };
+        let uhd = MediaInfo {
+            width: 3840,
+            height: 2160,
+            ..info()
+        };
+        let args = joined(&run(&uhd, &opts));
+        assert!(args.contains("-y -vaapi_device /dev/dri/renderD128 -i file:"));
+        assert!(args.contains("-vf scale=-2:1080,format=nv12,hwupload"));
+        assert!(args.contains("-c:v hevc_vaapi -rc_mode CQP -qp 25 -tag:v hvc1"));
+        assert!(!args.contains("-pix_fmt"));
+
+        // HDR stays 10-bit on the GPU too.
+        let hdr = MediaInfo {
+            pix_fmt: Some("yuv420p10le".into()),
+            ..info()
+        };
+        let args = joined(&run(&hdr, &hardware(Backend::Vaapi)));
+        assert!(args.contains("-vf format=p010,hwupload"));
+        assert!(args.contains("-profile:v main10"));
+    }
+
+    #[test]
+    fn gpu_encoders_take_their_own_speed_and_quality_settings() {
+        let slow = |backend| CompressOptions {
+            preset: Preset::Slow,
+            ..hardware(backend)
+        };
+        assert!(joined(&run(&info(), &slow(Backend::Nvenc))).contains(
+            "-c:v hevc_nvenc -preset p6 -rc vbr -cq 25 -b:v 0 -tag:v hvc1 -pix_fmt nv12"
+        ));
+        let amf_h264 = CompressOptions {
+            codec: Codec::H264,
+            ..slow(Backend::Amf)
+        };
+        assert!(joined(&run(&info(), &amf_h264)).contains(
+            "-c:v h264_amf -quality quality -rc cqp -qp_i 20 -qp_p 20 -qp_b 20 -pix_fmt nv12"
+        ));
+        assert!(joined(&run(&info(), &slow(Backend::Qsv)))
+            .contains("-c:v hevc_qsv -preset slow -global_quality 25"));
+    }
+
+    #[test]
+    fn hardware_asked_for_but_missing_falls_back_out_loud() {
+        let opts = CompressOptions {
+            engine: Engine::Hardware,
+            ..Default::default()
+        };
+        let plan = run(&info(), &opts);
+        assert!(joined(&plan).contains("-c:v libx265"));
+        assert!(plan.notes.iter().any(|n| n.contains("software")));
+    }
+
+    #[test]
+    fn probe_encodes_a_test_pattern_to_nowhere() {
+        let opts = hardware(Backend::Vaapi);
+        let args = probe_args(opts.hardware.as_ref().expect("hw"), Codec::H264)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            args,
+            "-hide_banner -nostdin -loglevel error -vaapi_device /dev/dri/renderD128 \
+             -f lavfi -i testsrc2=size=320x240:rate=30 -frames:v 5 -vf format=nv12,hwupload \
+             -c:v h264_vaapi -rc_mode CQP -qp 20 -f null -"
+        );
     }
 
     #[test]

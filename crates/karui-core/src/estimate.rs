@@ -6,9 +6,9 @@
 //! from a few seconds of encoding a synthetic clip; every real encode then
 //! replaces it with what this machine actually managed on real footage.
 
-use crate::args::{fps_cap, output_size};
+use crate::args::{fps_cap, output_size, video_args};
 use crate::encode;
-use crate::options::{Codec, CompressOptions, Preset};
+use crate::options::CompressOptions;
 use crate::probe::MediaInfo;
 use crate::tools::Tools;
 use crate::{Error, Result};
@@ -143,13 +143,13 @@ impl Rates {
         std::fs::rename(partial, path)
     }
 
-    pub fn get(&self, codec: Codec, preset: Preset) -> Option<Rate> {
-        self.rates.get(&key(codec, preset)).copied()
+    pub fn get(&self, opts: &CompressOptions) -> Option<Rate> {
+        self.rates.get(&key(opts)).copied()
     }
 
     /// Never replaces a measured rate: real encodes know better.
-    pub fn record_benchmark(&mut self, codec: Codec, preset: Preset, pixels_per_sec: f64) {
-        let entry = self.rates.entry(key(codec, preset));
+    pub fn record_benchmark(&mut self, opts: &CompressOptions, pixels_per_sec: f64) {
+        let entry = self.rates.entry(key(opts));
         let rate = Rate {
             pixels_per_sec,
             basis: Basis::Benchmark,
@@ -165,8 +165,8 @@ impl Rates {
 
     /// Replaces a benchmark outright, and averages with earlier encodes so
     /// one unusual file moves the estimate only halfway.
-    pub fn record_encode(&mut self, codec: Codec, preset: Preset, pixels_per_sec: f64) {
-        let entry = self.rates.entry(key(codec, preset)).or_insert(Rate {
+    pub fn record_encode(&mut self, opts: &CompressOptions, pixels_per_sec: f64) {
+        let entry = self.rates.entry(key(opts)).or_insert(Rate {
             pixels_per_sec,
             basis: Basis::Measured,
         });
@@ -178,8 +178,17 @@ impl Rates {
     }
 }
 
-fn key(codec: Codec, preset: Preset) -> String {
-    format!("{codec}/{preset}")
+/// `h265/medium` for software, as before hardware existed, so saved rates
+/// still apply. A hardware encoder gets its own: `h265/videotoolbox`, with
+/// the preset only for encoders that have presets.
+fn key(opts: &CompressOptions) -> String {
+    match opts.hardware() {
+        None => format!("{}/{}", opts.codec, opts.preset),
+        Some(hw) if hw.backend.has_presets() => {
+            format!("{}/{}/{:?}", opts.codec, opts.preset, hw.backend).to_lowercase()
+        }
+        Some(hw) => format!("{}/{:?}", opts.codec, hw.backend).to_lowercase(),
+    }
 }
 
 fn cpus() -> usize {
@@ -208,8 +217,8 @@ pub fn learnt(info: &MediaInfo, opts: &CompressOptions, elapsed_secs: f64) -> Op
 /// The ffmpeg arguments for a benchmark with `opts`' codec, preset, and CRF.
 /// Encodes to nowhere, so it writes nothing to disk.
 pub fn benchmark_args(opts: &CompressOptions) -> Vec<OsString> {
-    let crf = opts.crf().to_string();
-    let mut args: Vec<&str> = vec![
+    let video = video_args(opts, false);
+    let mut args: Vec<String> = [
         "-hide_banner",
         "-nostdin",
         "-nostats",
@@ -217,23 +226,16 @@ pub fn benchmark_args(opts: &CompressOptions) -> Vec<OsString> {
         "error",
         "-progress",
         "pipe:1",
-        "-f",
-        "lavfi",
-        "-i",
-        BENCH_SOURCE,
-        "-frames:v",
-        BENCH_FRAMES,
-        "-c:v",
-        opts.codec.encoder(),
-        "-preset",
-        opts.preset.name(),
-        "-crf",
-        &crf,
-    ];
-    if opts.codec == Codec::H265 {
-        args.extend(["-x265-params", "log-level=error"]);
+    ]
+    .map(String::from)
+    .to_vec();
+    args.extend(video.global);
+    args.extend(["-f", "lavfi", "-i", BENCH_SOURCE, "-frames:v", BENCH_FRAMES].map(String::from));
+    if let Some(upload) = video.upload {
+        args.extend(["-vf".to_string(), upload]);
     }
-    args.extend(["-pix_fmt", "yuv420p", "-f", "null", "-"]);
+    args.extend(video.codec);
+    args.extend(["-f", "null", "-"].map(String::from));
     args.into_iter().map(OsString::from).collect()
 }
 
@@ -245,7 +247,7 @@ pub fn benchmark_args(opts: &CompressOptions) -> Vec<OsString> {
 /// skews the rate. It measures the machine as it is: a busy one benchmarks
 /// slow, and the first real encode corrects it.
 pub fn benchmark(tools: &Tools, opts: &CompressOptions, cancel: &AtomicBool) -> Result<f64> {
-    let args = benchmark_args(opts);
+    let args = benchmark_args(&opts.resolved(tools)?);
     let stop = AtomicBool::new(false);
     let started = Instant::now();
     let mut points: Vec<(Instant, f64)> = Vec::new();
@@ -302,6 +304,8 @@ fn rate_between(points: &[(Instant, f64)]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware::{Backend, Hardware};
+    use crate::options::{Codec, Engine, Preset};
 
     fn info() -> MediaInfo {
         MediaInfo {
@@ -356,32 +360,55 @@ mod tests {
 
     #[test]
     fn encodes_override_benchmarks_and_then_average() {
+        let opts = CompressOptions::default();
         let mut rates = Rates::default();
-        rates.record_benchmark(Codec::H265, Preset::Medium, 50e6);
-        rates.record_encode(Codec::H265, Preset::Medium, 70e6);
-        let rate = rates.get(Codec::H265, Preset::Medium).expect("rate");
+        rates.record_benchmark(&opts, 50e6);
+        rates.record_encode(&opts, 70e6);
+        let rate = rates.get(&opts).expect("rate");
         assert_eq!(rate.pixels_per_sec, 70e6);
         assert_eq!(rate.basis, Basis::Measured);
 
-        rates.record_encode(Codec::H265, Preset::Medium, 50e6);
-        assert_eq!(
-            rates
-                .get(Codec::H265, Preset::Medium)
-                .expect("rate")
-                .pixels_per_sec,
-            60e6
-        );
+        rates.record_encode(&opts, 50e6);
+        assert_eq!(rates.get(&opts).expect("rate").pixels_per_sec, 60e6);
 
         // A later benchmark cannot undo what real encodes taught.
-        rates.record_benchmark(Codec::H265, Preset::Medium, 10e6);
+        rates.record_benchmark(&opts, 10e6);
+        assert_eq!(rates.get(&opts).expect("rate").pixels_per_sec, 60e6);
+        let h264 = CompressOptions {
+            codec: Codec::H264,
+            ..Default::default()
+        };
+        assert_eq!(rates.get(&h264), None);
+    }
+
+    #[test]
+    fn hardware_rates_are_kept_apart_from_software() {
+        let software = CompressOptions::default();
+        let hardware = |backend, preset| CompressOptions {
+            engine: Engine::Hardware,
+            preset,
+            hardware: Some(Hardware {
+                backend,
+                name: String::new(),
+                codecs: vec![Codec::H265],
+                device: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(key(&software), "h265/medium");
+        // One speed only, so the preset is not part of it.
         assert_eq!(
-            rates
-                .get(Codec::H265, Preset::Medium)
-                .expect("rate")
-                .pixels_per_sec,
-            60e6
+            key(&hardware(Backend::Videotoolbox, Preset::Slow)),
+            "h265/videotoolbox"
         );
-        assert_eq!(rates.get(Codec::H264, Preset::Medium), None);
+        assert_eq!(
+            key(&hardware(Backend::Nvenc, Preset::Slow)),
+            "h265/slow/nvenc"
+        );
+
+        let mut rates = Rates::default();
+        rates.record_encode(&hardware(Backend::Videotoolbox, Preset::Medium), 300e6);
+        assert_eq!(rates.get(&software), None);
     }
 
     #[test]
@@ -395,7 +422,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("karui-rates-{}", std::process::id()));
         let path = dir.join("encode-rates.json");
         let mut rates = Rates::default();
-        rates.record_encode(Codec::H264, Preset::Fast, 1e8);
+        rates.record_encode(
+            &CompressOptions {
+                codec: Codec::H264,
+                preset: Preset::Fast,
+                ..Default::default()
+            },
+            1e8,
+        );
         rates.save(&path).expect("save");
         assert_eq!(Rates::load(&path), rates);
 
@@ -422,7 +456,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(joined.contains("-progress pipe:1"));
-        assert!(joined.contains("-c:v libx265 -preset slow -crf 30 -x265-params log-level=error"));
+        assert!(joined.contains("-c:v libx265 -preset slow -crf 30 -tag:v hvc1"));
         assert!(joined.ends_with("-f null -"));
         assert!(!joined.contains("file:"));
     }

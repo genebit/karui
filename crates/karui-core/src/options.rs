@@ -3,6 +3,8 @@
 //! Mirrored by `CompressOptions` in `src/lib/bindings.ts`. Every field has a
 //! default, and `#[serde(default)]` means the frontend may omit any of them.
 
+use crate::hardware::Hardware;
+use crate::tools::Tools;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -180,6 +182,46 @@ impl FromStr for Audio {
     }
 }
 
+/// What does the encoding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    /// x264 or x265 on the processor: the smallest file for a given look.
+    #[default]
+    Software,
+    /// The machine's hardware encoder: several times faster, somewhat larger.
+    Hardware,
+}
+
+impl Engine {
+    pub fn name(self) -> &'static str {
+        match self {
+            Engine::Software => "software",
+            Engine::Hardware => "hardware",
+        }
+    }
+}
+
+impl fmt::Display for Engine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl FromStr for Engine {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "software" | "cpu" => Ok(Engine::Software),
+            "hardware" | "gpu" => Ok(Engine::Hardware),
+            other => Err(format!(
+                "unknown encoder `{other}`; expected software or hardware"
+            )),
+        }
+    }
+}
+
 /// The highest CRF either encoder accepts. Lower is better quality.
 pub const CRF_MAX: u8 = 51;
 
@@ -187,6 +229,12 @@ pub const CRF_MAX: u8 = 51;
 #[serde(rename_all = "camelCase", default)]
 pub struct CompressOptions {
     pub codec: Codec,
+    pub engine: Engine,
+    /// The hardware encoder to use when `engine` is [`Engine::Hardware`].
+    /// Never sent by the window: [`CompressOptions::resolved`] fills it in
+    /// from what this machine has.
+    #[serde(skip)]
+    pub hardware: Option<Hardware>,
     /// `None` takes [`Codec::default_crf`].
     pub crf: Option<u8>,
     pub preset: Preset,
@@ -211,6 +259,40 @@ pub struct CompressOptions {
 impl CompressOptions {
     pub fn crf(&self) -> u8 {
         self.crf.unwrap_or_else(|| self.codec.default_crf())
+    }
+
+    /// These options with the hardware encoder filled in, when asked for.
+    /// An error, rather than a quiet fall back to software, when this machine
+    /// has none for the codec: the user chose speed and should hear why they
+    /// are not getting it.
+    pub fn resolved(&self, tools: &Tools) -> Result<CompressOptions> {
+        let mut opts = self.clone();
+        if opts.engine == Engine::Software || opts.hardware.is_some() {
+            return Ok(opts);
+        }
+        match crate::hardware::detected(tools) {
+            Some(hw) if hw.supports(opts.codec) => {
+                opts.hardware = Some(hw);
+                Ok(opts)
+            }
+            Some(hw) => Err(Error::Invalid(format!(
+                "{} cannot encode {}; choose the other codec or software encoding",
+                hw.name,
+                opts.codec.name().to_uppercase()
+            ))),
+            None => Err(Error::Invalid(
+                "this computer has no hardware video encoder that works with ffmpeg; \
+                 use software encoding"
+                    .into(),
+            )),
+        }
+    }
+
+    /// The hardware encoder in use, once resolved.
+    pub fn hardware(&self) -> Option<&Hardware> {
+        self.hardware
+            .as_ref()
+            .filter(|_| self.engine == Engine::Hardware)
     }
 
     pub fn import_dir_or_default(&self) -> Option<PathBuf> {

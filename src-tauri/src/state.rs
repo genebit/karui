@@ -3,7 +3,7 @@
 use crate::error::{AppError, Result};
 use karui_core::devices::Ledger;
 use karui_core::estimate::{Rate, Rates};
-use karui_core::options::{Codec, Preset};
+use karui_core::options::CompressOptions;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError};
@@ -169,8 +169,8 @@ impl RateStore {
         }
     }
 
-    pub fn get(&self, codec: Codec, preset: Preset) -> Option<Rate> {
-        self.lock().get(codec, preset)
+    pub fn get(&self, opts: &CompressOptions) -> Option<Rate> {
+        self.lock().get(opts)
     }
 
     /// Change the rates and save them. A failed save costs a benchmark next

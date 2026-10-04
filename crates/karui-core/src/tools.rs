@@ -5,6 +5,7 @@
 //! Apple Silicon — is invisible to it. Searching `PATH` alone would make the
 //! desktop app report ffmpeg missing on exactly the machines that have it.
 
+use crate::hardware::Hardware;
 use crate::options::Codec;
 use crate::{Error, Result};
 use serde::Serialize;
@@ -45,6 +46,8 @@ pub struct ToolStatus {
     /// omit libx265, and the UI disables what is missing rather than letting
     /// every file fail with "Unknown encoder".
     pub encoders: Vec<Codec>,
+    /// The hardware encoder that works here, if any.
+    pub hardware: Option<Hardware>,
 }
 
 impl Tools {
@@ -63,6 +66,7 @@ impl Tools {
             ffprobe: self.ffprobe.display().to_string(),
             version: parse_version(&version),
             encoders: parse_encoders(&encoders),
+            hardware: crate::hardware::detected(self),
         })
     }
 }

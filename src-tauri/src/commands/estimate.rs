@@ -33,47 +33,55 @@ pub async fn estimate_times(
     rates: State<'_, Arc<RateStore>>,
 ) -> Result<Estimates> {
     options.validate()?;
-    let (codec, preset) = (options.codec, options.preset);
-    let rate = match rates.get(codec, preset) {
-        Some(rate) => rate,
-        None if runner.running() => {
-            return Ok(Estimates {
-                secs: vec![None; items.len()],
-                basis: None,
-            })
-        }
-        None => {
-            let cancel = sidework.begin(Task::Benchmark);
-            let (sidework, rates, opts) = (
-                sidework.inner().clone(),
-                rates.inner().clone(),
-                options.clone(),
-            );
-            tauri::async_runtime::spawn_blocking(move || {
+    let busy = runner.running();
+    let (sidework, rates) = (sidework.inner().clone(), rates.inner().clone());
+
+    // Off the async runtime: resolving the encoder can probe the hardware
+    // the first time, which is a few short encodes.
+    tauri::async_runtime::spawn_blocking(move || {
+        let tools = Tools::locate()?;
+        let opts = options.resolved(&tools)?;
+        let rate = match rates.get(&opts) {
+            Some(rate) => rate,
+            None if busy => {
+                return Ok(Estimates {
+                    secs: vec![None; items.len()],
+                    basis: None,
+                })
+            }
+            None => {
+                let cancel = sidework.begin(Task::Benchmark);
                 let _turn = sidework.turn();
                 // Another request may have measured it while this one waited.
-                if let Some(rate) = rates.get(codec, preset) {
-                    return Ok(rate);
+                match rates.get(&opts) {
+                    Some(rate) => rate,
+                    None => {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(karui_core::Error::Cancelled.into());
+                        }
+                        let measured = benchmark(&tools, &opts, &cancel)?;
+                        let encoder = match opts.hardware() {
+                            Some(hw) => format!("on {}", hw.name),
+                            None => format!("at the {} preset", opts.preset),
+                        };
+                        tracing::info!(
+                            "Timed {} {encoder}: about {:.0} megapixels a second",
+                            opts.codec,
+                            measured / 1e6
+                        );
+                        rates.update(|r| r.record_benchmark(&opts, measured));
+                        rates
+                            .get(&opts)
+                            .ok_or_else(|| AppError::Invalid("rate not saved".into()))?
+                    }
                 }
-                if cancel.load(Ordering::Relaxed) {
-                    return Err(karui_core::Error::Cancelled.into());
-                }
-                let measured = benchmark(&Tools::locate()?, &opts, &cancel)?;
-                tracing::info!(
-                    "Timed {codec} at the {preset} preset: about {:.0} megapixels a second",
-                    measured / 1e6
-                );
-                rates.update(|r| r.record_benchmark(codec, preset, measured));
-                rates
-                    .get(codec, preset)
-                    .ok_or_else(|| AppError::Invalid("rate not saved".into()))
-            })
-            .await
-            .map_err(|e| AppError::Invalid(e.to_string()))??
-        }
-    };
-    Ok(Estimates {
-        secs: times(&items, &options, rate),
-        basis: Some(rate.basis),
+            }
+        };
+        Ok(Estimates {
+            secs: times(&items, &opts, rate),
+            basis: Some(rate.basis),
+        })
     })
+    .await
+    .map_err(|e| AppError::Invalid(e.to_string()))?
 }

@@ -21,9 +21,21 @@ export type Preset =
 
 export type Audio = 'aac' | 'copy' | 'remove';
 
+/** `karui_core::options::Engine`: x264/x265 on the CPU, or the hardware encoder. */
+export type Engine = 'software' | 'hardware';
+
+/** `karui_core::hardware::Hardware`: the hardware encoder that works here. */
+export interface Hardware {
+  backend: 'videotoolbox' | 'vaapi' | 'nvenc' | 'amf' | 'qsv';
+  /** e.g. "Apple VideoToolbox" or "AMD GPU (VA-API)". */
+  name: string;
+  codecs: Codec[];
+}
+
 /** `karui_core::options::CompressOptions`. Every field may be omitted. */
 export interface CompressOptions {
   codec: Codec;
+  engine: Engine;
   /** `null` takes the codec's default: 23 for H.264, 28 for H.265. */
   crf: number | null;
   preset: Preset;
@@ -87,6 +99,8 @@ export interface ToolStatus {
   ffprobe: string;
   version: string;
   encoders: Codec[];
+  /** `null` when no hardware encoder works with this ffmpeg. */
+  hardware: Hardware | null;
 }
 
 /** `karui_core::preview::Rating`: a plain-language reading of SSIM. */

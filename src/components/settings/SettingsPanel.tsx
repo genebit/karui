@@ -16,9 +16,24 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import type { Audio, Codec, CompressOptions, Preset, ToolStatus } from '@/lib/bindings';
+import type {
+  Audio,
+  Codec,
+  CompressOptions,
+  Engine,
+  Preset,
+  ToolStatus,
+} from '@/lib/bindings';
 import { defaultCrf, type Settings } from '@/lib/settings';
 import { baseName, cn } from '@/lib/utils';
+
+const ENGINES: { value: Engine; label: string; hint: string }[] = [
+  { value: 'software', label: 'Software', hint: 'Smallest files' },
+  { value: 'hardware', label: 'Hardware', hint: 'Fastest' },
+];
+
+/** Hardware encoders whose speed the preset changes. */
+const PRESET_BACKENDS = ['nvenc', 'amf', 'qsv'];
 
 const CODECS: { value: Codec; label: string; hint: string }[] = [
   { value: 'h265', label: 'H.265', hint: 'Smaller' },
@@ -108,15 +123,60 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (typeof picked === 'string') set({ [field]: picked });
   };
   const importDir = options.importDir ?? defaultImport;
+  const hardware = options.engine === 'hardware' ? (tools?.hardware ?? null) : null;
+  // Apple's and VA-API's encoders run at one speed whatever the preset says.
+  const fixedSpeed = hardware !== null && !PRESET_BACKENDS.includes(hardware.backend);
+
+  const chooseEngine = (engine: Engine) => {
+    const codecs = engine === 'hardware' ? tools?.hardware?.codecs : undefined;
+    // Keep the codec if the hardware can do it, else take one it can.
+    const codec =
+      codecs && !codecs.includes(options.codec)
+        ? (codecs[0] ?? options.codec)
+        : options.codec;
+    set({ engine, codec, crf: codec === options.codec ? options.crf : null });
+  };
 
   return (
     <div className="space-y-5 px-3 py-3">
+      <Field label="Encoder">
+        <div className="grid grid-cols-2 gap-1.5">
+          {ENGINES.map((engine) => {
+            const none = engine.value === 'hardware' && tools !== null && !tools.hardware;
+            return (
+              <Button
+                key={engine.value}
+                variant={options.engine === engine.value ? 'secondary' : 'ghost'}
+                disabled={disabled || none}
+                onClick={() => chooseEngine(engine.value)}
+                className={cn(
+                  'h-auto flex-col items-start gap-0 rounded-lg border px-2.5 py-1.5',
+                  options.engine === engine.value ? 'border-ring/60' : 'border-border',
+                )}
+              >
+                <span className="text-xs font-semibold">{engine.label}</span>
+                <span className="text-muted-foreground text-[10.5px] font-normal">
+                  {none ? 'None found' : engine.hint}
+                </span>
+              </Button>
+            );
+          })}
+        </div>
+        <p className="text-muted-foreground text-[10.5px] leading-snug">
+          {hardware
+            ? `On ${hardware.name}. Many times faster, and frees the processor; files come out larger for the same look.`
+            : 'x264 and x265 on the processor: the smallest file for the look, using every core.'}
+        </p>
+      </Field>
+
       <Field label="Codec">
         <div className="grid grid-cols-2 gap-1.5">
           {CODECS.map((codec) => {
             // Unknown until the status arrives; assume available rather than
             // flashing everything disabled at launch.
-            const missing = tools !== null && !tools.encoders.includes(codec.value);
+            const missing = hardware
+              ? !hardware.codecs.includes(codec.value)
+              : tools !== null && !tools.encoders.includes(codec.value);
             return (
               <Button
                 key={codec.value}
@@ -130,7 +190,11 @@ export const SettingsPanel = memo(function SettingsPanel({
               >
                 <span className="text-xs font-semibold">{codec.label}</span>
                 <span className="text-muted-foreground text-[10.5px] font-normal">
-                  {missing ? 'Not in this ffmpeg' : codec.hint}
+                  {missing
+                    ? hardware
+                      ? 'Not on this hardware'
+                      : 'Not in this ffmpeg'
+                    : codec.hint}
                 </span>
               </Button>
             );
@@ -178,7 +242,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       <Field label="Speed">
         <Select
           value={options.preset}
-          disabled={disabled}
+          disabled={disabled || fixedSpeed}
           onValueChange={(value) => set({ preset: value as Preset })}
         >
           <SelectTrigger className="w-full">
@@ -193,7 +257,9 @@ export const SettingsPanel = memo(function SettingsPanel({
           </SelectContent>
         </Select>
         <p className="text-muted-foreground text-[10.5px] leading-snug">
-          Slower finds a smaller file at the same quality.
+          {fixedSpeed
+            ? 'This hardware encoder runs at one speed.'
+            : 'Slower finds a smaller file at the same quality.'}
         </p>
       </Field>
 

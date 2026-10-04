@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use karui_core::batch::{self, Event};
 use karui_core::discover::discover;
-use karui_core::options::{Audio, Codec, CompressOptions, Preset};
+use karui_core::options::{Audio, Codec, CompressOptions, Engine, Preset};
 use karui_core::plan::plan_for;
 use karui_core::probe::probe;
 use karui_core::tools::{install_hint, Tools};
@@ -44,6 +44,11 @@ enum Command {
         /// h264 or h265.
         #[arg(long, default_value_t = Codec::default())]
         codec: Codec,
+
+        /// software (x264/x265, smallest files) or hardware (the GPU or media
+        /// engine, several times faster). See `karui doctor` for what is here.
+        #[arg(long, default_value_t = Engine::default())]
+        encoder: Engine,
 
         /// 0–51, lower is better. Defaults to 23 for h264 and 28 for h265.
         #[arg(long)]
@@ -123,11 +128,15 @@ fn run(command: Command) -> karui_core::Result<ExitCode> {
             max_res,
             audio,
             import_dir,
+            encoder,
             overwrite,
             bell,
         } => {
             let opts = CompressOptions {
                 codec,
+                engine: encoder,
+                // Filled in by `resolved` below.
+                hardware: None,
                 crf,
                 preset,
                 max_fps,
@@ -138,6 +147,10 @@ fn run(command: Command) -> karui_core::Result<ExitCode> {
                 overwrite,
             };
             opts.validate()?;
+            let opts = opts.resolved(&tools)?;
+            if let Some(hw) = opts.hardware() {
+                eprintln!("encoding on {}", hw.name);
+            }
             compress(&tools, &input, &opts, bell)
         }
         Command::Probe { input } => {
@@ -172,6 +185,13 @@ fn run(command: Command) -> karui_core::Result<ExitCode> {
                     "missing"
                 };
                 println!("{:<8} {} {mark}", codec.name(), codec.encoder());
+            }
+            match &status.hardware {
+                Some(hw) => {
+                    let codecs: Vec<&str> = hw.codecs.iter().map(|c| c.name()).collect();
+                    println!("hardware {} ({})", hw.name, codecs.join(", "));
+                }
+                None => println!("hardware none that works with this ffmpeg"),
             }
             Ok(ExitCode::SUCCESS)
         }

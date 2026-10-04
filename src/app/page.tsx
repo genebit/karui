@@ -174,6 +174,17 @@ export default function Page() {
       setTools(status);
       setToolError(null);
       log('info', `ffmpeg ${status.version} at ${status.ffmpeg}`);
+      // A saved choice of hardware on a machine without it, such as settings
+      // carried to another computer, goes back to software out loud.
+      if (!status.hardware && settingsRef.current.options.engine === 'hardware') {
+        log('warn', 'No hardware encoder works here, so software encoding is selected.');
+        changeSettings({
+          ...settingsRef.current,
+          options: { ...settingsRef.current.options, engine: 'software' },
+        });
+      } else if (status.hardware) {
+        log('info', `Hardware encoding available: ${status.hardware.name}`);
+      }
       if (!status.encoders.includes('h265')) {
         log('warn', 'This ffmpeg was built without libx265, so H.265 is unavailable.');
         if (settingsRef.current.options.codec === 'h265') {
@@ -437,6 +448,7 @@ export default function Page() {
   // added or removed, not on progress, so ticks never re-request.
   const timingKey = JSON.stringify([
     options.codec,
+    options.engine,
     // The effective CRF: `null` and the codec's default are the same encode,
     // and keying them apart would measure every file twice.
     options.crf ?? defaultCrf(options.codec),
