@@ -247,8 +247,7 @@ fn source_bytes(
 ) -> Result<u64> {
     let from = offset + segment.start;
     let to = from + segment.secs;
-    // Read from a little before: ffprobe starts at the keyframe it seeks to.
-    let interval = format!("{:.3}%+{:.3}", (from - 1.0).max(0.0), segment.secs + 2.0);
+    let interval = read_interval(from, to);
     let output = command(&tools.ffprobe)
         .args(["-v", "error", "-select_streams", &stream.to_string()])
         .args(["-read_intervals", &interval])
@@ -264,6 +263,15 @@ fn source_bytes(
         from,
         to,
     ))
+}
+
+/// The ffprobe `-read_intervals` covering `[from, to)`. The end is absolute:
+/// ffprobe seeks back to the keyframe before the start, and a `+duration`
+/// end counts from that keyframe. With keyframes seconds apart, as in AV1
+/// and long-GOP camera footage, that read stopped short of the window and
+/// halved the source bytes, which doubled the estimate.
+fn read_interval(from: f64, to: f64) -> String {
+    format!("{:.3}%{:.3}", (from - 1.0).max(0.0), to + 1.0)
 }
 
 /// Bytes of the `pts_time,size` packets that fall in `[from, to)`.
@@ -366,6 +374,14 @@ mod tests {
         let mut blind = packets;
         blind.source_bytes = 0;
         assert_eq!(blind.extrapolate_by_ratio(500.0, 100e6), None);
+    }
+
+    #[test]
+    fn reads_to_an_absolute_end_whatever_keyframe_the_seek_lands_on() {
+        // Not `9.600%+2.801`, which ends 2.8 s after wherever ffprobe's
+        // seek lands, as early as the keyframe at 0.
+        assert_eq!(read_interval(10.6, 11.4), "9.600%12.400");
+        assert_eq!(read_interval(0.5, 1.3), "0.000%2.300");
     }
 
     #[test]
