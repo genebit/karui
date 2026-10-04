@@ -162,6 +162,9 @@ export interface Summary {
   elapsedSecs: number;
 }
 
+/** One progress report, as the live encode monitor reads it. */
+export type ProgressEvent = Extract<CompressEvent, { type: 'progress' }>;
+
 /** `karui_core::batch::Event`, emitted on `compress://event`. */
 export type CompressEvent =
   | { type: 'started'; index: number; total: number; input: string; output: string }
@@ -174,6 +177,21 @@ export type CompressEvent =
       speed: number | null;
       etaSecs: number | null;
       outTimeSecs: number;
+      /** Frames written, and how many there will be. */
+      frame: number | null;
+      totalFrames: number | null;
+      /** Frames a second right now, smoothed over the last few reports. */
+      fps: number | null;
+      /** Frames a second over the whole encode so far. */
+      averageFps: number | null;
+      bitrateKbps: number | null;
+      /** The quantizer of the latest frame: what the CRF works out to there. */
+      quantizer: number | null;
+      writtenBytes: number | null;
+      /** The output's final size at the rate so far. */
+      projectedBytes: number | null;
+      /** Since this file's encode began. */
+      elapsedSecs: number;
     }
   | {
       type: 'finished';

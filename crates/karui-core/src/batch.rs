@@ -10,6 +10,7 @@ use crate::encode::{encode, file_name};
 use crate::options::CompressOptions;
 use crate::plan::Job;
 use crate::probe::probe;
+use crate::progress::Meter;
 use crate::tools::Tools;
 use crate::{estimate, units, Error};
 use serde::Serialize;
@@ -39,6 +40,20 @@ pub enum Event {
         speed: Option<f64>,
         eta_secs: Option<f64>,
         out_time_secs: f64,
+        /// Frames written, and how many there will be when it is done.
+        frame: Option<u64>,
+        total_frames: Option<u64>,
+        /// Frames a second right now, smoothed over the last few reports.
+        fps: Option<f64>,
+        /// Frames a second over the whole encode so far.
+        average_fps: Option<f64>,
+        bitrate_kbps: Option<f64>,
+        quantizer: Option<f64>,
+        written_bytes: Option<u64>,
+        /// The output's final size at the rate so far.
+        projected_bytes: Option<u64>,
+        /// Since this file's encode began.
+        elapsed_secs: f64,
     },
     Finished {
         index: usize,
@@ -107,7 +122,11 @@ pub fn run(
 
         let result = probe(tools, &job.input).and_then(|info| {
             let duration = info.duration_secs;
+            let total_frames = estimate::work(&info, opts).map(|w| w.frames.round() as u64);
+            let began = Instant::now();
+            let mut meter = Meter::default();
             let outcome = encode(tools, job, &info, opts, cancel, &mut |snapshot| {
+                let now = Instant::now();
                 on_event(Event::Progress {
                     index,
                     input: input.clone(),
@@ -115,6 +134,15 @@ pub fn run(
                     speed: snapshot.speed,
                     eta_secs: snapshot.eta_secs(duration),
                     out_time_secs: snapshot.out_time_secs,
+                    frame: snapshot.frame,
+                    total_frames,
+                    fps: snapshot.frame.and_then(|f| meter.update(now, f)),
+                    average_fps: snapshot.average_fps,
+                    bitrate_kbps: snapshot.bitrate_kbps,
+                    quantizer: snapshot.quantizer,
+                    written_bytes: snapshot.total_size,
+                    projected_bytes: snapshot.projected_bytes(duration),
+                    elapsed_secs: now.duration_since(began).as_secs_f64(),
                 });
             })?;
             let rate = estimate::learnt(&info, opts, outcome.elapsed.as_secs_f64());
@@ -191,10 +219,21 @@ mod tests {
             speed: None,
             eta_secs: Some(3.0),
             out_time_secs: 1.0,
+            frame: Some(30),
+            total_frames: Some(240),
+            fps: Some(12.5),
+            average_fps: None,
+            bitrate_kbps: None,
+            quantizer: None,
+            written_bytes: Some(1000),
+            projected_bytes: None,
+            elapsed_secs: 2.0,
         };
         let json = serde_json::to_value(&event).expect("serialise");
         assert_eq!(json["type"], "progress");
         assert_eq!(json["etaSecs"], 3.0);
+        assert_eq!(json["totalFrames"], 240);
+        assert_eq!(json["writtenBytes"], 1000);
         assert_eq!(json["outTimeSecs"], 1.0);
     }
 

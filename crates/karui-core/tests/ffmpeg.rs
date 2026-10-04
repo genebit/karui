@@ -73,6 +73,16 @@ fn compresses_a_batch_end_to_end() {
 
     assert_eq!(summary.succeeded, 2, "events: {events:?}");
     assert!(events.iter().any(|e| matches!(e, Event::Progress { .. })));
+    // The live monitor's numbers arrive from a real encode.
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Progress {
+            frame: Some(_),
+            total_frames: Some(_),
+            written_bytes: Some(_),
+            ..
+        }
+    )));
 
     for job in &jobs {
         assert!(job.output.exists());

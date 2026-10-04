@@ -19,6 +19,7 @@ import { CardsBar } from '@/components/cards/CardsBar';
 import { OnboardingDialog, seenOnboarding } from '@/components/OnboardingDialog';
 import { Brand, Credit } from '@/components/Credit';
 import { LogPanel, type LogEntry } from '@/components/logs/LogPanel';
+import { EncodeMonitor } from '@/components/monitor/EncodeMonitor';
 import { PreviewPane } from '@/components/preview/PreviewPane';
 import { QueueList } from '@/components/queue/QueueList';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
@@ -37,6 +38,7 @@ import type {
 } from '@/lib/bindings';
 import { playChime } from '@/lib/chime';
 import * as ipc from '@/lib/ipc';
+import { record, type Monitor } from '@/lib/monitor';
 import { notify } from '@/lib/notify';
 import {
   VIDEO_EXTENSIONS,
@@ -108,6 +110,9 @@ export default function Page() {
   const [selected, setSelected] = useState<string | null>(null);
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
   const [onboarding, setOnboarding] = useState(false);
+  // Live encode details for the file being compressed.
+  const [monitor, setMonitor] = useState<Monitor | null>(null);
+  const [monitorCollapsed, setMonitorCollapsed] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(false);
   const resizing = useRef(false);
   // Read inside event listeners registered once, which would otherwise see
@@ -293,6 +298,7 @@ export default function Page() {
     const batches = listen<CompressEvent>(ipc.COMPRESS_EVENT, (event) => {
       const payload = event.payload;
       setEntries((current) => applyEvent(current, payload));
+      setMonitor((current) => record(current, payload));
       if (payload.type === 'finished' && payload.pixelsPerSec !== null) {
         setLearnt((n) => n + 1);
       }
@@ -552,11 +558,17 @@ export default function Page() {
   );
   const selectEntry = useCallback((path: string) => {
     setSelected(path);
-    setPreviewCollapsed(false);
+    // A file being compressed has no output to compare yet, and its sample
+    // waits for the batch, so its preview starts folded under the monitor.
+    const running = entriesRef.current.some(
+      (e) => e.path === path && e.status === 'running',
+    );
+    setPreviewCollapsed(running);
   }, []);
   const togglePreview = useCallback(() => setPreviewCollapsed((c) => !c), []);
   const toggleLog = useCallback(() => setLogCollapsed((c) => !c), []);
   const closePreview = useCallback(() => setSelected(null), []);
+  const toggleMonitor = useCallback(() => setMonitorCollapsed((c) => !c), []);
   const onAddFiles = useCallback(() => void addFiles(), [addFiles]);
   const compressCard = useCallback(
     (paths: string[]) => void importVideos(paths, true),
@@ -726,6 +738,17 @@ export default function Page() {
             onAddFolder={onAddFolder}
           />
         </section>
+
+        {previewing?.status === 'running' && monitor?.path === previewing.path && (
+          <section className="shrink-0 border-t border-border bg-card">
+            <EncodeMonitor
+              entry={previewing}
+              monitor={monitor}
+              collapsed={monitorCollapsed}
+              onToggle={toggleMonitor}
+            />
+          </section>
+        )}
 
         {previewing && (
           <section
