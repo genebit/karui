@@ -322,11 +322,14 @@ const Row = memo(function Row({
             )}
             title={
               size < inputBytes
-                ? 'Estimated size with the current settings, from three short sample encodes'
-                : 'With these settings this file would come out no smaller'
+                ? 'An estimate from five short sample encodes with the current settings. ' +
+                  'Footage that changes a lot can come out larger or smaller.'
+                : 'Estimated: with these settings this file would come out no smaller'
             }
           >
-            {formatChange(inputBytes, size)} ({formatBytes(size)})
+            {/* Said in the label, not only the tooltip: the real size can
+                differ, and a bare number reads as a promise. */}
+            est. {formatChange(inputBytes, size)} ({formatBytes(size)})
           </span>
         )}
         {sizing && (

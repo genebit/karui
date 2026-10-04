@@ -3,16 +3,21 @@
 //!
 //! Output size depends on the footage far more than on the settings: the same
 //! CRF shrinks a static interview by 90% and grainy night footage by 30%, so
-//! no formula over resolution and bitrate gets close. Instead a few frames
-//! from three points in the file are encoded with the real settings, and
-//! their per-frame cost is scaled up to the whole file.
+//! no formula over resolution and bitrate gets close. Instead short stretches
+//! from five points in the file are encoded with the real settings.
+//!
+//! They are scaled up by compression ratio, not by size: each sample's output
+//! is compared with the source's own bytes for the same stretch, and that
+//! ratio applied to the whole source. A dark, still scene is small in the
+//! source and the output alike, so the ratio holds where raw sizes swing.
+//! Scaling raw sizes from samples that happened to land on easy scenes put a
+//! 4K demo reel at a third of its real size.
 //!
 //! Each sample opens on a keyframe, which costs many times an ordinary frame.
-//! Averaging it in would inflate the estimate several-fold for short samples,
-//! so keyframes are counted apart and charged at the encoder's real keyframe
-//! interval instead.
+//! Averaging it in would inflate the estimate, so keyframes are counted apart
+//! and charged at the encoder's real keyframe interval instead.
 
-use crate::args::{audio_out, sample_args, AudioOut};
+use crate::args::{audio_out, sample_args, AudioOut, KEYFRAME_INTERVAL};
 use crate::encode;
 use crate::estimate::work;
 use crate::options::{Audio, CompressOptions, AAC_BITS_PER_SEC};
@@ -22,19 +27,16 @@ use crate::{Error, Result};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Frames per sample. Enough for the encoder's B-frames and rate control to
-/// settle past the opening keyframe, few enough that three samples of 4K
-/// footage encode in a few seconds.
-const SEGMENT_FRAMES: f64 = 12.0;
+/// Frames per sample: past x264's 40-frame lookahead at its default preset
+/// (x265 looks 20 ahead), so the encoder settles into the choices it makes
+/// mid-file. Twelve-frame samples, shorter than the lookahead, came out at
+/// about half the size of the same frames in a full encode.
+const SEGMENT_FRAMES: f64 = 48.0;
 
 /// Where in the file the samples are taken, as fractions of its length.
-/// Away from the ends, which are often a static title or a fade.
-const SEGMENT_POINTS: [f64; 3] = [0.2, 0.5, 0.8];
-
-/// x264's and x265's default maximum keyframe interval, which they reach on
-/// footage without scene cuts. Scene-cut keyframes are part of what the
-/// samples measure.
-const KEYINT: f64 = 250.0;
+/// Spread over the whole file, since footage varies more along its length
+/// than within any one stretch.
+const SEGMENT_POINTS: [f64; 5] = [0.1, 0.3, 0.5, 0.7, 0.9];
 
 /// MP4's index costs a dozen or so bytes per frame.
 const MP4_BYTES_PER_FRAME: f64 = 12.0;
@@ -66,13 +68,15 @@ pub fn segments(duration: f64, fps: f64) -> Vec<Segment> {
         .collect()
 }
 
-/// Video packet sizes from the samples.
+/// Video packet sizes from the samples, and the source's bytes for the same
+/// stretches.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Packets {
     key_bytes: u64,
     keys: u32,
     other_bytes: u64,
     others: u32,
+    source_bytes: u64,
 }
 
 impl Packets {
@@ -105,6 +109,23 @@ impl Packets {
         (self.key_bytes + self.other_bytes) as f64
     }
 
+    /// Video bytes for `frames` frames from a source with `source_video`
+    /// bytes of video, by the samples' compression ratio. `None` without
+    /// source bytes to compare against, so the caller can fall back.
+    fn extrapolate_by_ratio(&self, frames: f64, source_video: f64) -> Option<f64> {
+        if self.keys == 0 || self.others == 0 || self.source_bytes == 0 || source_video <= 0.0 {
+            return None;
+        }
+        let key = self.key_bytes as f64 / f64::from(self.keys);
+        let other = self.other_bytes as f64 / f64::from(self.others);
+        // The samples as if their opening keyframes were ordinary frames;
+        // keyframes are added back at their real interval.
+        let ordinary = self.other_bytes as f64 + f64::from(self.keys) * other;
+        let ratio = ordinary / self.source_bytes as f64;
+        let keyframes = (frames / f64::from(KEYFRAME_INTERVAL)).ceil().max(1.0);
+        Some(ratio * source_video + keyframes * (key - other).max(0.0))
+    }
+
     /// Video bytes for `frames` frames.
     fn extrapolate(&self, frames: f64) -> Option<f64> {
         if self.keys == 0 || self.others == 0 {
@@ -112,7 +133,7 @@ impl Packets {
         }
         let key = self.key_bytes as f64 / f64::from(self.keys);
         let other = self.other_bytes as f64 / f64::from(self.others);
-        let keyframes = (frames / KEYINT).ceil().max(1.0);
+        let keyframes = (frames / f64::from(KEYFRAME_INTERVAL)).ceil().max(1.0);
         Some(frames * other + keyframes * (key - other).max(0.0))
     }
 }
@@ -153,6 +174,7 @@ pub fn measure(
     std::fs::create_dir_all(dir)?;
 
     let plan = segments(duration, fps);
+    let offset = stream_start(tools, input, info.video_stream);
     let mut packets = Packets::default();
     for (i, segment) in plan.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -172,12 +194,17 @@ pub fn measure(
             .and_then(|()| read_packets(tools, &sample));
         let _ = std::fs::remove_file(&sample);
         packets.add(&encoded?);
+        // A failed read only costs the ratio; raw scaling is the fallback.
+        packets.source_bytes +=
+            source_bytes(tools, input, info.video_stream, offset, segment).unwrap_or(0);
     }
 
     let video = if plan.len() == 1 {
         Some(packets.total())
     } else {
-        packets.extrapolate(work.frames)
+        packets
+            .extrapolate_by_ratio(work.frames, source_video_bytes(info, duration))
+            .or_else(|| packets.extrapolate(work.frames))
     }
     .ok_or_else(|| Error::Encode {
         path: input.to_path_buf(),
@@ -185,6 +212,70 @@ pub fn measure(
     })?;
     let bytes = video + audio_bytes(info, opts, duration) + work.frames * MP4_BYTES_PER_FRAME;
     Ok(bytes.round() as u64)
+}
+
+/// The source's video bytes: the file less its audio, whose bitrate the
+/// probe read. The container's own few kilobytes are lost in the rounding.
+fn source_video_bytes(info: &MediaInfo, duration: f64) -> f64 {
+    let audio = info.audio_bitrate.unwrap_or(0) as f64 / 8.0 * duration;
+    (info.size_bytes as f64 - audio).max(info.size_bytes as f64 / 2.0)
+}
+
+/// When the video stream's clock starts. Camcorder `.MTS` files start at a
+/// second or more, and `-ss` counts from there while ffprobe's intervals do
+/// not.
+fn stream_start(tools: &Tools, input: &Path, stream: u32) -> f64 {
+    command(&tools.ffprobe)
+        .args(["-v", "error", "-select_streams", &stream.to_string()])
+        .args(["-show_entries", "stream=start_time", "-of", "csv=p=0"])
+        .arg(file_url(input))
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok())
+        .filter(|start: &f64| start.is_finite())
+        .unwrap_or(0.0)
+}
+
+/// The source's bytes for the stretch a sample encoded, reading only that
+/// stretch of the file.
+fn source_bytes(
+    tools: &Tools,
+    input: &Path,
+    stream: u32,
+    offset: f64,
+    segment: &Segment,
+) -> Result<u64> {
+    let from = offset + segment.start;
+    let to = from + segment.secs;
+    // Read from a little before: ffprobe starts at the keyframe it seeks to.
+    let interval = format!("{:.3}%+{:.3}", (from - 1.0).max(0.0), segment.secs + 2.0);
+    let output = command(&tools.ffprobe)
+        .args(["-v", "error", "-select_streams", &stream.to_string()])
+        .args(["-read_intervals", &interval])
+        .args(["-show_entries", "packet=pts_time,size", "-of", "csv=p=0"])
+        .arg(file_url(input))
+        .output()
+        .map_err(|e| Error::Tool {
+            tool: "ffprobe",
+            message: e.to_string(),
+        })?;
+    Ok(sum_window(
+        &String::from_utf8_lossy(&output.stdout),
+        from,
+        to,
+    ))
+}
+
+/// Bytes of the `pts_time,size` packets that fall in `[from, to)`.
+fn sum_window(csv: &str, from: f64, to: f64) -> u64 {
+    csv.lines()
+        .filter_map(|line| {
+            let (pts, size) = line.split_once(',')?;
+            let pts: f64 = pts.trim().parse().ok()?;
+            let size: u64 = size.trim().split(',').next()?.parse().ok()?;
+            (pts >= from && pts < to).then_some(size)
+        })
+        .sum()
 }
 
 fn read_packets(tools: &Tools, sample: &Path) -> Result<String> {
@@ -238,11 +329,13 @@ mod tests {
     }
 
     #[test]
-    fn samples_three_points_or_the_whole_of_a_short_file() {
+    fn samples_five_points_or_the_whole_of_a_short_file() {
         let long = segments(100.0, 24.0);
-        assert_eq!(long.len(), 3);
-        assert!((long[1].start - (50.0 - 0.25)).abs() < 1e-9);
-        assert!((long[0].secs - 0.5).abs() < 1e-9);
+        assert_eq!(long.len(), 5);
+        // 48 frames at 24 fps, centred on 10%, 30% … 90%.
+        assert!((long[0].secs - 2.0).abs() < 1e-9);
+        assert!((long[2].start - (50.0 - 1.0)).abs() < 1e-9);
+        assert!((long[4].start - (90.0 - 1.0)).abs() < 1e-9);
 
         assert_eq!(
             segments(2.0, 24.0),
@@ -251,6 +344,46 @@ mod tests {
                 secs: 2.0
             }]
         );
+    }
+
+    #[test]
+    fn scales_by_compression_ratio_not_raw_size() {
+        let mut packets = Packets::default();
+        // Two samples of a keyframe and three frames, where the source spent
+        // 400 kB on each stretch: the output is a tenth of the source.
+        for _ in 0..2 {
+            packets.add("40000,K__\n10000,___\n10000,___\n10000,___\n");
+            packets.source_bytes += 400_000;
+        }
+        // The whole source is 100 MB of video over 500 frames: two keyframes.
+        let bytes = packets.extrapolate_by_ratio(500.0, 100e6).expect("bytes");
+        assert_eq!(bytes, 0.1 * 100e6 + 2.0 * 30_000.0);
+        // Raw scaling sees only that these frames were small, and says half.
+        let raw = packets.extrapolate(500.0).expect("raw");
+        assert!((raw / bytes - 0.5).abs() < 0.01, "{raw} vs {bytes}");
+
+        // Without source bytes there is no ratio, and the caller falls back.
+        let mut blind = packets;
+        blind.source_bytes = 0;
+        assert_eq!(blind.extrapolate_by_ratio(500.0, 100e6), None);
+    }
+
+    #[test]
+    fn sums_only_the_source_packets_in_the_stretch() {
+        let csv = "9.9,1000\n10.0,200\n10.5,300\n11.99,400\n12.0,5000\nN/A,7\n";
+        assert_eq!(sum_window(csv, 10.0, 12.0), 900);
+    }
+
+    #[test]
+    fn source_video_is_the_file_less_its_audio() {
+        let with_audio = info(Some("aac"), Some(128_000));
+        let one_second = with_audio.size_bytes as f64; // 1 byte file: floored at half
+        assert_eq!(source_video_bytes(&with_audio, 1.0), one_second / 2.0);
+        let big = MediaInfo {
+            size_bytes: 10_000_000,
+            ..info(Some("aac"), Some(128_000))
+        };
+        assert_eq!(source_video_bytes(&big, 100.0), 10_000_000.0 - 1_600_000.0);
     }
 
     #[test]
