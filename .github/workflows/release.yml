@@ -6,7 +6,44 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The draft release is made once, before any bundle finishes. Left to
+  # tauri-action, each of the three jobs looked for it on finishing and made
+  # it if missing, so two finishing together could leave duplicate drafts.
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.result }}
+    steps:
+      - uses: actions/github-script@v7
+        id: release
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const { owner, repo } = context.repo;
+            // A re-run finds the draft its first attempt made.
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner,
+              repo,
+            });
+            const existing = releases.find((r) => r.tag_name === tag);
+            if (existing) return existing.id;
+            const { data } = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              name: `karui ${tag}`,
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
   bundle:
+    needs: create-release
+    # Also runs when create-release is skipped, for a workflow_dispatch build.
+    if: ${{ !cancelled() && needs.create-release.result != 'failure' }}
     permissions:
       contents: write
     strategy:
@@ -53,12 +90,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # A tag publishes a draft release. workflow_dispatch has no tag to
-          # name one after, so it builds and publishes nothing.
-          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('karui {0}', github.ref_name) || '' }}
-          releaseDraft: true
-          prerelease: false
+          # Uploads into the draft create-release made. Empty for a
+          # workflow_dispatch build, which then builds and publishes nothing.
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
       # So a dry run still leaves something to install and check by hand.
