@@ -13,7 +13,11 @@
   <br />
 
   <img src="https://skillicons.dev/icons?i=rust,ts,react,nextjs,tauri,tailwind" alt="Rust, TypeScript, React, Next.js, Tauri, Tailwind CSS" />
+  <img width="1822" height="1185" alt="Screenshot 2026-10-04 at 10 14 17 PM" src="https://github.com/user-attachments/assets/19f64578-0e39-4002-ae0f-988bc6c57e95" />
+  <img width="1822" height="1185" alt="Screenshot 2026-10-04 at 10 26 54 PM" src="https://github.com/user-attachments/assets/b86d6a93-ec5f-47ab-8214-18d2e46d3289" />
+  <img width="1822" height="1185" alt="Screenshot 2026-10-04 at 10 13 58 PM" src="https://github.com/user-attachments/assets/9051d1dd-2d4b-4d03-ade5-6951946f1c84" />
 </div>
+
 
 <br />
 
