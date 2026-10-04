@@ -22,7 +22,14 @@ import { RELEASES_URL, currentVersion, isNewer, latestVersion } from '@/lib/vers
  * platform's bundle from the releases page: the bundles are unsigned, so an
  * in-place updater would have nothing to verify a download against.
  */
-export function UpdateDialog({ onLog }: { onLog: (level: string, message: string) => void }) {
+export function UpdateDialog({
+  onLog,
+  deferred = false,
+}: {
+  onLog: (level: string, message: string) => void;
+  /** Wait to appear, for instance until the first-launch guide is closed. */
+  deferred?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   // Kept apart from `open` so the text does not blank while the dialog
   // animates closed.
@@ -54,7 +61,7 @@ export function UpdateDialog({ onLog }: { onLog: (level: string, message: string
   }, [onLog]);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open && !deferred} onOpenChange={setOpen}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Update available</DialogTitle>

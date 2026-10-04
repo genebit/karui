@@ -4,9 +4,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { CircleAlert, FileVideo, FolderOpen, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
+import {
+  CircleAlert,
+  CircleHelp,
+  FileVideo,
+  FolderOpen,
+  Play,
+  RefreshCw,
+  Square,
+  Trash2,
+} from 'lucide-react';
 
 import { CardsBar } from '@/components/cards/CardsBar';
+import { OnboardingDialog, seenOnboarding } from '@/components/OnboardingDialog';
 import { Brand, Credit } from '@/components/Credit';
 import { LogPanel, type LogEntry } from '@/components/logs/LogPanel';
 import { PreviewPane } from '@/components/preview/PreviewPane';
@@ -97,6 +107,7 @@ export default function Page() {
   const [logHeight, setLogHeight] = useState(140);
   const [selected, setSelected] = useState<string | null>(null);
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
+  const [onboarding, setOnboarding] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(false);
   const resizing = useRef(false);
   // Read inside event listeners registered once, which would otherwise see
@@ -111,6 +122,11 @@ export default function Page() {
   // Settings live in localStorage, which is unavailable during the static
   // export's prerender, so they are read after mount.
   useEffect(() => setSettings(loadSettings()), []);
+  // Also from localStorage, so also after mount: the guide opens by itself
+  // only on the first launch.
+  useEffect(() => {
+    if (!seenOnboarding()) setOnboarding(true);
+  }, []);
 
   const changeSettings = useCallback((next: Settings) => {
     setSettings(next);
@@ -597,6 +613,15 @@ export default function Page() {
 
       <main className="relative flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-3">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setOnboarding(true)}
+            title="Getting started"
+            aria-label="Getting started"
+          >
+            <CircleHelp />
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => void addFiles()} title="Add videos (⌘O)">
             <FileVideo />
             Add videos
@@ -759,7 +784,9 @@ export default function Page() {
         // A collapsed log is only its header, which is h-9.
         offset={{ bottom: (logCollapsed ? 36 : logHeight) + 16, right: 16 }}
       />
-      <UpdateDialog onLog={log} />
+      <OnboardingDialog open={onboarding} onOpenChange={setOnboarding} />
+      {/* Held back while the guide is open, so the two never stack. */}
+      <UpdateDialog onLog={log} deferred={onboarding} />
     </div>
   );
 }
