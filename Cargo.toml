@@ -2,6 +2,7 @@
 members = [
   "crates/karui-core",
   "crates/karui-cli",
+  "src-tauri",
 ]
 # The engine needs no webview, so plain `cargo test` stays fast and works on a
 # machine without GTK or WebKit installed.

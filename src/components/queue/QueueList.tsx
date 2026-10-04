@@ -1,0 +1,232 @@
+'use client';
+
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import {
+  CircleAlert,
+  CircleCheck,
+  CircleSlash,
+  FileVideo,
+  FolderOpen,
+  FolderSearch,
+  Loader2,
+  X,
+} from 'lucide-react';
+
+import { Logo } from '@/components/Logo';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import type { MediaInfo } from '@/lib/bindings';
+import { isActive, type Entry, type Status } from '@/lib/queue';
+import {
+  baseName,
+  cn,
+  dirName,
+  formatBytes,
+  formatChange,
+  formatDuration,
+} from '@/lib/utils';
+
+const STATUS: Record<Status, { label: string; className: string }> = {
+  ready: { label: 'Ready', className: 'text-muted-foreground' },
+  unreadable: { label: 'Unreadable', className: 'text-destructive' },
+  queued: { label: 'Queued', className: 'text-muted-foreground' },
+  running: { label: 'Compressing', className: 'text-foreground' },
+  done: { label: 'Done', className: 'text-foreground' },
+  failed: { label: 'Failed', className: 'text-destructive' },
+  cancelled: { label: 'Cancelled', className: 'text-muted-foreground' },
+};
+
+function StatusIcon({ status }: { status: Status }) {
+  const className = 'size-4 shrink-0';
+  switch (status) {
+    case 'running':
+      return <Loader2 className={cn(className, 'animate-spin')} />;
+    case 'done':
+      return <CircleCheck className={className} />;
+    case 'failed':
+    case 'unreadable':
+      return <CircleAlert className={cn(className, 'text-destructive')} />;
+    case 'cancelled':
+      return <CircleSlash className={cn(className, 'text-muted-foreground')} />;
+    default:
+      return <FileVideo className={cn(className, 'text-muted-foreground')} />;
+  }
+}
+
+/** `1920×1080 · hevc · 29.97 fps · 1:23 · 120.4 MB`, as a player shows it. */
+function describe(info: MediaInfo): string {
+  const portrait = info.rotation % 180 === 90;
+  const [w, h] = portrait ? [info.height, info.width] : [info.width, info.height];
+  return [
+    `${w}×${h}`,
+    info.videoCodec,
+    info.fps ? `${Number(info.fps.toFixed(2))} fps` : null,
+    info.durationSecs ? formatDuration(info.durationSecs) : null,
+    formatBytes(info.sizeBytes),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function Row({
+  entry,
+  locked,
+  onRemove,
+}: {
+  entry: Entry;
+  locked: boolean;
+  onRemove: (path: string) => void;
+}) {
+  const status = STATUS[entry.status];
+  const inputBytes = entry.info?.sizeBytes ?? 0;
+
+  return (
+    <div className="group flex items-start gap-3 border-b border-border px-4 py-3">
+      <div className="pt-0.5">
+        <StatusIcon status={entry.status} />
+      </div>
+
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex items-baseline gap-2">
+          <span className="truncate text-[13px] font-medium" title={entry.path}>
+            {baseName(entry.path)}
+          </span>
+          <span className="text-muted-foreground truncate text-[11px]" title={entry.path}>
+            {dirName(entry.path)}
+          </span>
+        </div>
+
+        {entry.info && (
+          <div className="text-muted-foreground font-mono text-[11px]">
+            {describe(entry.info)}
+          </div>
+        )}
+
+        {entry.status === 'running' && (
+          <div className="flex items-center gap-3 pt-1">
+            <Progress
+              value={(entry.fraction ?? 0) * 100}
+              indeterminate={entry.fraction === null}
+              className="flex-1"
+            />
+            <span className="text-muted-foreground w-44 shrink-0 text-right font-mono text-[11px] whitespace-nowrap">
+              {entry.fraction !== null && `${Math.round(entry.fraction * 100)}%`}
+              {entry.speed !== null && ` · ${entry.speed.toFixed(1)}x`}
+              {entry.etaSecs !== null && ` · ${formatDuration(entry.etaSecs)} left`}
+            </span>
+          </div>
+        )}
+
+        {entry.status === 'done' && entry.outputBytes !== null && (
+          <div className="flex items-center gap-2 text-[11.5px]">
+            <span className="font-mono">
+              {formatBytes(inputBytes)} → {formatBytes(entry.outputBytes)}
+            </span>
+            <Badge
+              variant={entry.outputBytes < inputBytes ? 'secondary' : 'destructive'}
+              className="font-mono"
+            >
+              {formatChange(inputBytes, entry.outputBytes)}
+            </Badge>
+            {entry.elapsedSecs !== null && (
+              <span className="text-muted-foreground">
+                in {formatDuration(entry.elapsedSecs)}
+              </span>
+            )}
+          </div>
+        )}
+
+        {entry.error && (entry.status === 'failed' || entry.status === 'unreadable') && (
+          <div className="text-destructive text-[11.5px] break-words">{entry.error}</div>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1">
+        <span className={cn('text-[11px]', status.className)}>{status.label}</span>
+        {entry.status === 'done' && entry.output && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Show in folder"
+            onClick={() => void revealItemInDir(entry.output!).catch(() => undefined)}
+          >
+            <FolderSearch />
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          title="Remove from list"
+          disabled={locked && isActive(entry.status)}
+          onClick={() => onRemove(entry.path)}
+          className="opacity-0 group-hover:opacity-100 disabled:opacity-0"
+        >
+          <X />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function QueueList({
+  entries,
+  locked,
+  adding,
+  onRemove,
+  onAddFiles,
+  onAddFolder,
+}: {
+  entries: Entry[];
+  /** A batch is running; its rows cannot be removed. */
+  locked: boolean;
+  adding: boolean;
+  onRemove: (path: string) => void;
+  onAddFiles: () => void;
+  onAddFolder: () => void;
+}) {
+  if (entries.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border border-dashed border-border px-8 py-12 text-center">
+          {adding ? (
+            <Loader2 className="text-muted-foreground size-8 animate-spin" />
+          ) : (
+            <Logo className="h-10 w-auto opacity-80" />
+          )}
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Drop videos or folders here</div>
+            <div className="text-muted-foreground text-xs">
+              MP4, MOV, MKV, WebM, AVI and more. Folders are read one level deep.
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onAddFiles}>
+              <FileVideo />
+              Add videos
+            </Button>
+            <Button variant="outline" size="sm" onClick={onAddFolder}>
+              <FolderOpen />
+              Add folder
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ScrollArea className="h-full">
+      {entries.map((entry) => (
+        <Row key={entry.path} entry={entry} locked={locked} onRemove={onRemove} />
+      ))}
+      {adding && (
+        <div className="text-muted-foreground flex items-center gap-2 px-4 py-3 text-xs">
+          <Loader2 className="size-3.5 animate-spin" />
+          Reading…
+        </div>
+      )}
+    </ScrollArea>
+  );
+}
