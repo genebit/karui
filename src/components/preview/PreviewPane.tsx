@@ -186,6 +186,9 @@ export const PreviewPane = memo(function PreviewPane({
     output === null
       ? JSON.stringify([
           options.codec,
+          // Hardware and software samples of the same settings differ, and
+          // must not answer for each other from the cache.
+          options.engine,
           options.crf,
           options.preset,
           options.maxFps,
