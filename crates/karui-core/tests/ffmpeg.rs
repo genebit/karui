@@ -103,6 +103,212 @@ fn compresses_a_batch_end_to_end() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A clip made by ffmpeg from `inputs` (lavfi graphs) and encoder `args`.
+fn generate(tools: &Tools, path: &Path, inputs: &[&str], args: &[&str]) {
+    let mut cmd = command(&tools.ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
+    for input in inputs {
+        cmd.args(["-f", "lavfi", "-i", input]);
+    }
+    let status = cmd
+        .args(args)
+        .arg(format!("file:{}", path.display()))
+        .status()
+        .expect("run ffmpeg");
+    assert!(status.success(), "could not generate {}", path.display());
+}
+
+/// The MD5 of a file's audio packets, which match only if they were copied.
+fn audio_md5(tools: &Tools, path: &Path) -> String {
+    let output = command(&tools.ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(format!("file:{}", path.display()))
+        .args(["-map", "0:a:0", "-c", "copy", "-f", "md5", "-"])
+        .output()
+        .expect("run ffmpeg");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+#[ignore = "needs ffmpeg and ffprobe"]
+fn keeps_the_original_when_compressing_would_not_shrink_it() {
+    let tools = Tools::locate().expect("ffmpeg on PATH");
+    let dir = scratch("kept");
+    // Already squeezed far harder than CRF 12 will be.
+    let clip = dir.join("tiny.mp4");
+    generate(
+        &tools,
+        &clip,
+        &["testsrc2=size=320x240:rate=30:duration=2"],
+        &["-c:v", "libx264", "-crf", "45"],
+    );
+    let opts = CompressOptions {
+        codec: Codec::H264,
+        crf: Some(12),
+        ..Default::default()
+    };
+    let cancel = AtomicBool::new(false);
+
+    let beside = plan(std::slice::from_ref(&clip), None, false);
+    let mut events = Vec::new();
+    let summary = batch::run(&tools, &beside, &opts, &cancel, |e| events.push(e));
+    assert_eq!(
+        (summary.succeeded, summary.kept),
+        (0, 1),
+        "events: {events:?}"
+    );
+    assert_eq!(summary.output_bytes, 0);
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::KeptOriginal { input_bytes, output_bytes, .. } if output_bytes >= input_bytes
+    )));
+    assert!(!beside[0].output.exists());
+    assert!(!partial_path(&beside[0].output).exists());
+    assert!(clip.exists());
+
+    // Sent to another folder, it is written however it came out.
+    let elsewhere = plan(std::slice::from_ref(&clip), Some(&dir.join("out")), false);
+    let summary = batch::run(&tools, &elsewhere, &opts, &cancel, |_| {});
+    assert_eq!((summary.succeeded, summary.kept), (1, 0));
+    assert!(elsewhere[0].output.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "needs ffmpeg and ffprobe"]
+fn copies_aac_already_small_and_halves_mono() {
+    let tools = Tools::locate().expect("ffmpeg on PATH");
+    let dir = scratch("audio");
+    let video = "testsrc2=size=320x240:rate=30:duration=3";
+    let small = dir.join("small aac.mp4");
+    generate(
+        &tools,
+        &small,
+        &[video, "sine=frequency=440:duration=3"],
+        &[
+            "-c:v",
+            "libx264",
+            "-ac",
+            "2",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            "-shortest",
+        ],
+    );
+    let large = dir.join("large aac.mp4");
+    generate(
+        &tools,
+        &large,
+        &[video, "sine=frequency=440:duration=3"],
+        &[
+            "-c:v",
+            "libx264",
+            "-ac",
+            "2",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "256k",
+            "-shortest",
+        ],
+    );
+    let mono = dir.join("mono pcm.mov");
+    generate(
+        &tools,
+        &mono,
+        &[video, "sine=frequency=440:duration=3"],
+        &[
+            "-c:v",
+            "libx264",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            "-shortest",
+        ],
+    );
+
+    let jobs = plan(
+        &[small.clone(), large.clone(), mono.clone()],
+        Some(&dir.join("out")),
+        false,
+    );
+    let cancel = AtomicBool::new(false);
+    let summary = batch::run(&tools, &jobs, &CompressOptions::default(), &cancel, |_| {});
+    assert_eq!(summary.succeeded, 3);
+
+    // Copied untouched, packet for packet.
+    assert_eq!(
+        audio_md5(&tools, &jobs[0].output),
+        audio_md5(&tools, &small)
+    );
+    // Re-encoded down to 128k.
+    assert_ne!(
+        audio_md5(&tools, &jobs[1].output),
+        audio_md5(&tools, &large)
+    );
+    let bitrate = |path: &Path| {
+        probe(&tools, path)
+            .expect("probe")
+            .audio_bitrate
+            .expect("bitrate")
+    };
+    assert!(
+        bitrate(&jobs[1].output) <= 140_000,
+        "{}",
+        bitrate(&jobs[1].output)
+    );
+    // Mono PCM becomes 64k AAC, not 128k.
+    let out = probe(&tools, &jobs[2].output).expect("probe");
+    assert_eq!(out.audio_codec.as_deref(), Some("aac"));
+    assert_eq!(out.audio_channels, Some(1));
+    assert!(
+        bitrate(&jobs[2].output) <= 70_000,
+        "{}",
+        bitrate(&jobs[2].output)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "needs ffmpeg and ffprobe"]
+fn deinterlaces_interlaced_footage() {
+    let tools = Tools::locate().expect("ffmpeg on PATH");
+    let dir = scratch("interlaced");
+    // 50 fields a second woven into 25 top-field-first frames, as 1080i50
+    // from a camcorder is.
+    let clip = dir.join("camcorder 50i.mp4");
+    generate(
+        &tools,
+        &clip,
+        &["testsrc2=size=320x240:rate=50:duration=2"],
+        &[
+            "-vf",
+            "interlace=scan=tff",
+            "-c:v",
+            "libx264",
+            "-flags",
+            "+ildct+ilme",
+            "-x264-params",
+            "tff=1",
+        ],
+    );
+    let source = probe(&tools, &clip).expect("probe");
+    assert!(source.interlaced);
+
+    let jobs = plan(&[clip], Some(&dir.join("out")), false);
+    let cancel = AtomicBool::new(false);
+    let summary = batch::run(&tools, &jobs, &CompressOptions::default(), &cancel, |_| {});
+    assert_eq!(summary.succeeded, 1);
+    let out = probe(&tools, &jobs[0].output).expect("probe output");
+    assert!(!out.interlaced);
+    // One frame out per frame in.
+    assert!((out.fps.expect("fps") - 25.0).abs() < 0.1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 #[ignore = "needs ffmpeg and ffprobe"]
 fn a_failed_encode_leaves_no_files() {

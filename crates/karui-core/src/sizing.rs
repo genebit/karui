@@ -12,7 +12,7 @@
 //! so keyframes are counted apart and charged at the encoder's real keyframe
 //! interval instead.
 
-use crate::args::{sample_args, MP4_AUDIO};
+use crate::args::{audio_out, sample_args, AudioOut};
 use crate::encode;
 use crate::estimate::work;
 use crate::options::{Audio, CompressOptions, AAC_BITS_PER_SEC};
@@ -119,13 +119,10 @@ impl Packets {
 
 /// Audio bytes for the whole file, from its bitrate rather than by encoding.
 fn audio_bytes(info: &MediaInfo, opts: &CompressOptions, duration: f64) -> f64 {
-    let bits_per_sec = match (opts.audio, info.audio_codec.as_deref()) {
-        (_, None) | (Audio::Remove, _) => 0,
-        (Audio::Copy, Some(codec)) if MP4_AUDIO.contains(&codec) => {
-            info.audio_bitrate.unwrap_or(AAC_BITS_PER_SEC)
-        }
-        // Re-encoded to AAC, whether asked for or because MP4 cannot hold it.
-        _ => AAC_BITS_PER_SEC,
+    let bits_per_sec = match audio_out(info, opts) {
+        AudioOut::Silent => 0,
+        AudioOut::Copy => info.audio_bitrate.unwrap_or(AAC_BITS_PER_SEC),
+        AudioOut::Aac(bits_per_sec) => bits_per_sec,
     };
     bits_per_sec as f64 / 8.0 * duration
 }
@@ -234,6 +231,9 @@ mod tests {
             video_stream: 0,
             audio_codec: audio.map(Into::into),
             audio_bitrate: bitrate,
+            audio_channels: Some(2),
+            audio_tracks: u32::from(audio.is_some()),
+            interlaced: false,
         }
     }
 

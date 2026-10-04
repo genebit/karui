@@ -25,8 +25,12 @@ const ERROR_LINES: usize = 3;
 #[derive(Clone, Copy, Debug)]
 pub struct Outcome {
     pub input_bytes: u64,
+    /// What the encode came to, kept or not.
     pub output_bytes: u64,
     pub elapsed: Duration,
+    /// The encode came out no smaller than its source beside it, so it was
+    /// discarded and the original is the copy to keep.
+    pub kept_original: bool,
 }
 
 pub fn encode(
@@ -54,14 +58,30 @@ pub fn encode(
         return Err(error);
     }
 
-    replace(&partial, &job.output)?;
-    keep_modified_time(&job.input, &job.output);
-    let output_bytes = std::fs::metadata(&job.output)?.len();
+    let output_bytes = std::fs::metadata(&partial)?.len();
+    let kept_original = output_bytes >= info.size_bytes && beside_source(job);
+    if kept_original {
+        // Decided on the working file, so a file already at the output path,
+        // which the user asked to overwrite, survives a discarded encode.
+        let _ = std::fs::remove_file(&partial);
+    } else {
+        replace(&partial, &job.output)?;
+        keep_modified_time(&job.input, &job.output);
+    }
     Ok(Outcome {
         input_bytes: info.size_bytes,
         output_bytes,
         elapsed: started.elapsed(),
+        kept_original,
     })
+}
+
+/// An output in its source's own folder is a second copy of the same video,
+/// which is only worth keeping if it is smaller. One sent elsewhere, to an
+/// output folder or off a camera card, is a file the user asked to have
+/// there, so it is written however it came out.
+fn beside_source(job: &Job) -> bool {
+    job.output.parent() == job.input.parent()
 }
 
 /// Run one ffmpeg encode to completion, reporting progress and stopping when
@@ -196,6 +216,20 @@ pub(crate) fn file_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_outputs_beside_their_source_are_discarded() {
+        let job = |input: &str, output: &str| Job {
+            input: input.into(),
+            output: output.into(),
+        };
+        assert!(beside_source(&job("/v/a.mov", "/v/a-compressed.mp4")));
+        assert!(!beside_source(&job("/v/a.mov", "/out/a.mp4")));
+        assert!(!beside_source(&job(
+            "/Volumes/CARD/DCIM/100/a.mp4",
+            "/Users/me/Movies/karui/a.mp4"
+        )));
+    }
 
     #[test]
     fn summary_keeps_the_last_lines() {

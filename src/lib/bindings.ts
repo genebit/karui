@@ -21,6 +21,9 @@ export type Preset =
 
 export type Audio = 'aac' | 'copy' | 'remove';
 
+/** `karui_core::options::Content`: what the footage is, for x264/x265's `-tune`. */
+export type Content = 'general' | 'animation' | 'grain';
+
 /** `karui_core::options::Engine`: x264/x265 on the CPU, or the hardware encoder. */
 export type Engine = 'software' | 'hardware';
 
@@ -39,6 +42,8 @@ export interface CompressOptions {
   /** `null` takes the codec's default: 23 for H.264, 28 for H.265. */
   crf: number | null;
   preset: Preset;
+  /** Ignored by hardware encoders. */
+  content: Content;
   maxFps: number | null;
   /** Ceiling on the shorter side, so 720 means 720p in either orientation. */
   maxResolution: number | null;
@@ -69,6 +74,12 @@ export interface MediaInfo {
   audioCodec: string | null;
   /** Bits per second of the audio stream, when recorded. */
   audioBitrate: number | null;
+  /** Channels in that audio stream. */
+  audioChannels: number | null;
+  /** How many audio streams the file has. */
+  audioTracks: number;
+  /** Stored as fields, as 1080i is. Deinterlaced when compressed. */
+  interlaced: boolean;
 }
 
 /** `commands::queue::QueueItem`. */
@@ -166,9 +177,11 @@ export interface CardSummary {
   freshBytes: number;
 }
 
-/** `karui_core::batch::Summary`. Byte totals cover successful jobs only. */
+/** `karui_core::batch::Summary`. Byte totals cover jobs that wrote an output. */
 export interface Summary {
   succeeded: number;
+  /** Encoded but not kept: the original beside it was already as small. */
+  kept: number;
   failed: number;
   cancelled: number;
   inputBytes: number;
@@ -216,6 +229,17 @@ export type CompressEvent =
       outputBytes: number;
       elapsedSecs: number;
       /** The encode rate achieved, which the backend learns from. */
+      pixelsPerSec: number | null;
+    }
+  | {
+      /** No smaller than the original beside it, so nothing was written. */
+      type: 'keptOriginal';
+      index: number;
+      input: string;
+      inputBytes: number;
+      /** What the discarded encode came to. */
+      outputBytes: number;
+      elapsedSecs: number;
       pixelsPerSec: number | null;
     }
   | { type: 'failed'; index: number; input: string; message: string }

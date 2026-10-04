@@ -66,6 +66,17 @@ pub enum Event {
         /// when it was too short to say.
         pixels_per_sec: Option<f64>,
     },
+    /// Encoded, but no smaller than the original beside it, so nothing was
+    /// written and the original stays the only copy.
+    KeptOriginal {
+        index: usize,
+        input: String,
+        input_bytes: u64,
+        /// What the discarded encode came to.
+        output_bytes: u64,
+        elapsed_secs: f64,
+        pixels_per_sec: Option<f64>,
+    },
     Failed {
         index: usize,
         input: String,
@@ -84,9 +95,11 @@ pub enum Event {
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
     pub succeeded: usize,
+    /// Encoded but not kept: the original was already as small.
+    pub kept: usize,
     pub failed: usize,
     pub cancelled: usize,
-    /// Totals over the jobs that succeeded.
+    /// Totals over the jobs that succeeded and wrote an output.
     pub input_bytes: u64,
     pub output_bytes: u64,
     pub elapsed_secs: f64,
@@ -150,6 +163,23 @@ pub fn run(
         });
 
         match result {
+            Ok((outcome, pixels_per_sec)) if outcome.kept_original => {
+                summary.kept += 1;
+                on_event(Event::KeptOriginal {
+                    index,
+                    input,
+                    input_bytes: outcome.input_bytes,
+                    output_bytes: outcome.output_bytes,
+                    elapsed_secs: outcome.elapsed.as_secs_f64(),
+                    pixels_per_sec,
+                });
+                tracing::warn!(
+                    "{name}: kept the original; compressing came to {} ({}), no smaller. \
+                     Raise the CRF or lower the resolution to shrink it.",
+                    units::bytes(outcome.output_bytes),
+                    units::change(outcome.input_bytes, outcome.output_bytes),
+                );
+            }
             Ok((outcome, pixels_per_sec)) => {
                 summary.succeeded += 1;
                 summary.input_bytes += outcome.input_bytes;
@@ -173,8 +203,8 @@ pub fn run(
                     units::duration(outcome.elapsed.as_secs_f64()),
                 );
                 if outcome.output_bytes >= outcome.input_bytes {
-                    // Kept rather than deleted: the user may still want the
-                    // MP4 or the H.265. But it is not what they came for.
+                    // Written anyway, since it went to a folder the user
+                    // chose. But it is not what they came for.
                     tracing::warn!(
                         "{name} came out no smaller; the source is already compressed \
                          harder than CRF {}. Raise the CRF or lower the resolution.",

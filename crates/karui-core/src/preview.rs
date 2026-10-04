@@ -406,6 +406,9 @@ mod tests {
             video_stream: 0,
             audio_codec: None,
             audio_bitrate: None,
+            audio_channels: None,
+            audio_tracks: 0,
+            interlaced: false,
         }
     }
 

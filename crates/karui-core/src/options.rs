@@ -133,11 +133,67 @@ impl FromStr for Preset {
     }
 }
 
+/// What the footage is, so x264 and x265 can tune for it. Hardware encoders
+/// have no such setting and ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Content {
+    /// Camera footage. The encoders' own defaults.
+    #[default]
+    General,
+    /// Cartoons, motion graphics, and screen recordings: flat colour and hard
+    /// edges, which take stronger deblocking and more reference frames.
+    Animation,
+    /// Film grain or heavy sensor noise, kept rather than smeared. Larger.
+    Grain,
+}
+
+impl Content {
+    pub fn name(self) -> &'static str {
+        match self {
+            Content::General => "general",
+            Content::Animation => "animation",
+            Content::Grain => "grain",
+        }
+    }
+
+    /// The `-tune` both x264 and x265 know by this name.
+    pub fn tune(self) -> Option<&'static str> {
+        match self {
+            Content::General => None,
+            Content::Animation => Some("animation"),
+            Content::Grain => Some("grain"),
+        }
+    }
+}
+
+impl fmt::Display for Content {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl FromStr for Content {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "general" | "film" | "camera" => Ok(Content::General),
+            "animation" | "screen" => Ok(Content::Animation),
+            "grain" => Ok(Content::Grain),
+            other => Err(format!(
+                "unknown content `{other}`; expected general, animation, or grain"
+            )),
+        }
+    }
+}
+
 /// What happens to the audio tracks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Audio {
-    /// Re-encode to AAC at [`AAC_BITRATE`].
+    /// AAC at no more than [`AAC_BITS_PER_SEC`], half that for mono. AAC
+    /// already within it is copied rather than encoded a second time.
     #[default]
     Aac,
     /// Keep the original stream untouched, when MP4 can hold it.
@@ -146,9 +202,8 @@ pub enum Audio {
     Remove,
 }
 
-/// Transparent for speech and most music, and small next to any video stream.
-pub const AAC_BITRATE: &str = "128k";
-/// [`AAC_BITRATE`] as a number, for size estimates.
+/// Stereo AAC's bitrate: transparent for speech and most music, and small
+/// next to any video stream.
 pub const AAC_BITS_PER_SEC: u64 = 128_000;
 
 impl Audio {
@@ -238,6 +293,7 @@ pub struct CompressOptions {
     /// `None` takes [`Codec::default_crf`].
     pub crf: Option<u8>,
     pub preset: Preset,
+    pub content: Content,
     /// Frame-rate ceiling. A source already at or below it is left alone, so
     /// 24 fps film is never padded out to 30 with duplicated frames — which is
     /// what the original script's fixed `-r 25` did to anything slower.
@@ -382,6 +438,8 @@ mod tests {
         assert_eq!("hevc".parse::<Codec>(), Ok(Codec::H265));
         assert_eq!("VerySlow".parse::<Preset>(), Ok(Preset::Veryslow));
         assert_eq!("none".parse::<Audio>(), Ok(Audio::Remove));
+        assert_eq!("screen".parse::<Content>(), Ok(Content::Animation));
+        assert!("cartoon".parse::<Content>().is_err());
         assert!("vp9".parse::<Codec>().is_err());
     }
 }

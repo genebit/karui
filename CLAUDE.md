@@ -29,7 +29,8 @@ cargo fmt --all
 # CLI.
 cargo run -p karui-cli -- doctor
 cargo run -p karui-cli -- compress <files or folders> [-o DIR] [--codec h264|h265] \
-  [--crf N] [--preset P] [--max-fps N] [--max-res N] [--audio aac|copy|remove] [--overwrite]
+  [--crf N] [--preset P] [--content general|animation|grain] [--max-fps N] [--max-res N] \
+  [--audio aac|copy|remove] [--overwrite]
 cargo run -p karui-cli -- probe <files or folders>
 cargo run -p karui-cli -- -vv compress ...      # debug: logs the exact ffmpeg argv
 
@@ -125,6 +126,9 @@ paths ─→ discover ─→ probe ─→ plan ─→ args ─→ encode ─→ 
 | Resolution cap | Applies to the **shorter** side, in display orientation (after rotation). `scale=-2:N` or `scale=N:-2`. |
 | 10-bit / HDR | Keep `yuv420p10le` for H.265. H.264 gets 8-bit `yuv420p` and a note. |
 | Audio copy | Only codecs MP4 can carry (`args::MP4_AUDIO`). Anything else is re-encoded to AAC with a note. |
+| AAC bitrate | 128k, 64k for mono. AAC already within it (+5%, ffprobe's reading wanders) is copied, not re-encoded. Both only for a single audio track: `-c:a`/`-b:a` reach every track and only the first is probed. Decided once in `args::audio_out`, which `sizing` also reads. |
+| Interlaced | `field_order` `tt`/`bb`/`tb`/`bt` → `bwdif=mode=send_frame` **first** in `-vf` (a scale before it blends the fields), one frame out per frame in, plus a note. |
+| No smaller | An output beside its source that is no smaller is discarded before the rename (`Event::KeptOriginal`). One sent to an output folder or off a card is written regardless. |
 | Cover art | Map the probed `video_stream` index, never `0:v:0`; an attached picture can be stream 0. |
 | Hardware encoding | Only the encoder moves to hardware; decode and filters stay on the CPU (VideoToolbox decode plus a download was 5× slower). Probe with a real encode, since `-encoders` lists AMF and QSV without drivers. VA-API needs `-vaapi_device` before `-i` and `format=nv12,hwupload` last in `-vf`. Quality maps from the CRF slider: VideoToolbox `-q:v` was calibrated on an M2 to match x265's SSIM; the GPU QP mapping is a first guess. |
 | Progress | `-progress pipe:1 -nostats`. `out_time_ms` is actually microseconds. Emit only on `progress=`. |

@@ -64,17 +64,18 @@ pub async fn start_compression(
     std::thread::spawn(move || {
         let _guard = guard;
         batch::run(&tools, &jobs, &options, &cancel, |event| {
-            // Each real encode sharpens the estimates for the files after it.
-            if let Event::Finished {
-                input,
-                pixels_per_sec,
-                ..
-            } = &event
+            // Each real encode sharpens the estimates for the files after it,
+            // including one whose output was discarded.
+            if let Event::Finished { pixels_per_sec, .. }
+            | Event::KeptOriginal { pixels_per_sec, .. } = &event
             {
                 if let Some(rate) = *pixels_per_sec {
                     rates.update(|r| r.record_encode(&options, rate));
                 }
-                // So the card offers only newer clips next time.
+            }
+            // So the card offers only newer clips next time. A card file's
+            // output always goes elsewhere, so it is never discarded.
+            if let Event::Finished { input, .. } = &event {
                 if card_of(Path::new(input)).is_some() {
                     ledger.record(Path::new(input));
                 }

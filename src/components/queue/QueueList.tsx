@@ -181,7 +181,9 @@ const Row = memo(function Row({
   /** Move this row one place up (`-1`) or down (`1`). */
   onNudge: (path: string, by: -1 | 1) => void;
 }) {
-  const status = STATUS[entry.status];
+  const status = entry.keptOriginal
+    ? { label: 'Kept original', className: 'text-muted-foreground' }
+    : STATUS[entry.status];
   // Running rows show the live ETA and finished rows the real time instead.
   const showEstimate =
     estimate !== null && entry.status !== 'running' && entry.status !== 'done';
@@ -274,7 +276,19 @@ const Row = memo(function Row({
           </div>
         )}
 
-        {entry.status === 'done' && entry.outputBytes !== null && (
+        {entry.keptOriginal && entry.outputBytes !== null && (
+          <div
+            className="text-muted-foreground text-[11.5px]"
+            title="Nothing was written; raise the CRF or lower the resolution to shrink it"
+          >
+            Already as small: compressing came to{' '}
+            <span className="font-mono">
+              {formatBytes(entry.outputBytes)} ({formatChange(inputBytes, entry.outputBytes)})
+            </span>
+          </div>
+        )}
+
+        {entry.status === 'done' && !entry.keptOriginal && entry.outputBytes !== null && (
           <div className="flex items-center gap-2 text-[11.5px]">
             <span className="font-mono">
               {formatBytes(inputBytes)} → {formatBytes(entry.outputBytes)}

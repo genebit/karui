@@ -4,7 +4,7 @@
 //! options, so every flag here is unit-tested without running ffmpeg.
 
 use crate::hardware::{Backend, Hardware};
-use crate::options::{Audio, Codec, CompressOptions, Engine, Preset, AAC_BITRATE};
+use crate::options::{Audio, Codec, CompressOptions, Engine, Preset, AAC_BITS_PER_SEC};
 use crate::probe::{file_url, MediaInfo};
 use std::ffi::OsString;
 use std::path::Path;
@@ -223,6 +223,9 @@ fn build(
     if ten_bit && !keep_ten_bit {
         notes.push("10-bit source reduced to 8-bit: H.264 players rarely decode 10-bit".into());
     }
+    if info.interlaced {
+        notes.push("interlaced source deinterlaced, at the same frame rate".into());
+    }
     if opts.engine == Engine::Hardware && opts.hardware().is_none() {
         notes.push("no hardware encoder was set up, so this was encoded in software".into());
     }
@@ -253,18 +256,18 @@ fn build(
         push(&mut args, &["-vf", &chain]);
     }
 
-    match (opts.audio, info.audio_codec.as_deref()) {
-        (_, None) | (Audio::Remove, _) => push(&mut args, &["-an"]),
-        (Audio::Copy, Some(codec)) if MP4_AUDIO.contains(&codec) => {
-            push(&mut args, &["-c:a", "copy"])
+    match audio_out(info, opts) {
+        AudioOut::Silent => push(&mut args, &["-an"]),
+        AudioOut::Copy => push(&mut args, &["-c:a", "copy"]),
+        AudioOut::Aac(bits_per_sec) => {
+            if let (Audio::Copy, Some(codec)) = (opts.audio, info.audio_codec.as_deref()) {
+                notes.push(format!(
+                    "{codec} audio cannot go in MP4 as-is; re-encoded to AAC"
+                ));
+            }
+            let bitrate = format!("{}k", bits_per_sec / 1000);
+            push(&mut args, &["-c:a", "aac", "-b:a", &bitrate]);
         }
-        (Audio::Copy, Some(codec)) => {
-            notes.push(format!(
-                "{codec} audio cannot go in MP4 as-is; re-encoded to AAC"
-            ));
-            push(&mut args, &["-c:a", "aac", "-b:a", AAC_BITRATE]);
-        }
-        (Audio::Aac, Some(_)) => push(&mut args, &["-c:a", "aac", "-b:a", AAC_BITRATE]),
     }
 
     // `faststart` moves the index to the front so a browser can start playing
@@ -274,6 +277,52 @@ fn build(
     args.push(file_url(output));
 
     EncodePlan { args, notes }
+}
+
+/// What an encode does with the audio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum AudioOut {
+    Silent,
+    Copy,
+    /// Re-encoded to AAC at this many bits a second.
+    Aac(u64),
+}
+
+/// Leeway over the AAC bitrate within which a source's AAC is copied. A
+/// stream encoded at 128k reads anywhere from 125 to 132 kb/s in ffprobe.
+const AAC_COPY_SLACK: f64 = 1.05;
+
+pub(crate) fn audio_out(info: &MediaInfo, opts: &CompressOptions) -> AudioOut {
+    let Some(codec) = info.audio_codec.as_deref() else {
+        return AudioOut::Silent;
+    };
+    // `-c:a` and `-b:a` reach every track, but only the first was probed, so
+    // a file with several keeps the old blanket rule.
+    let one_track = info.audio_tracks <= 1;
+    // Half for mono: 128k spread over one channel is twice what stereo gets
+    // per channel, and well past where AAC stops sounding different.
+    let aac = if one_track && info.audio_channels == Some(1) {
+        AAC_BITS_PER_SEC / 2
+    } else {
+        AAC_BITS_PER_SEC
+    };
+    match opts.audio {
+        Audio::Remove => AudioOut::Silent,
+        Audio::Copy if MP4_AUDIO.contains(&codec) => AudioOut::Copy,
+        Audio::Copy => AudioOut::Aac(aac),
+        // AAC already at or under the target is copied: re-encoding it could
+        // only lose quality, and would save nothing.
+        Audio::Aac
+            if one_track
+                && codec == "aac"
+                && info
+                    .audio_bitrate
+                    .is_some_and(|b| b as f64 <= aac as f64 * AAC_COPY_SLACK) =>
+        {
+            AudioOut::Copy
+        }
+        Audio::Aac => AudioOut::Aac(aac),
+    }
 }
 
 /// The encoder's share of an ffmpeg command. Real encodes, preview and size
@@ -300,6 +349,9 @@ pub(crate) fn video_args(opts: &CompressOptions, ten_bit: bool) -> VideoArgs {
             "-crf",
             &crf,
         ]);
+        if let Some(tune) = opts.content.tune() {
+            codec.extend(strings(&["-tune", tune]));
+        }
         if hevc {
             // Without `hvc1` QuickTime, Safari, and iOS refuse to play H.265
             // in MP4 at all; ffmpeg's default tag is `hev1`.
@@ -517,6 +569,13 @@ pub fn output_size(info: &MediaInfo, opts: &CompressOptions) -> (u32, u32) {
 
 fn video_filters(info: &MediaInfo, opts: &CompressOptions) -> Vec<String> {
     let mut filters = Vec::new();
+    // First, while the two fields are still interleaved line by line: a
+    // scale before it would blend them together. One frame out per frame in
+    // keeps the frame rate every estimate assumes, and the combing it
+    // removes is detail an encoder would otherwise spend bits on.
+    if info.interlaced {
+        filters.push("bwdif=mode=send_frame".into());
+    }
 
     if let Some(max) = fps_cap(info, opts) {
         filters.push(format!("fps={max}"));
@@ -540,7 +599,7 @@ fn video_filters(info: &MediaInfo, opts: &CompressOptions) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::Preset;
+    use crate::options::{Content, Preset};
 
     fn info() -> MediaInfo {
         MediaInfo {
@@ -555,6 +614,9 @@ mod tests {
             video_stream: 0,
             audio_codec: Some("aac".into()),
             audio_bitrate: None,
+            audio_channels: Some(2),
+            audio_tracks: 1,
+            interlaced: false,
         }
     }
 
@@ -698,6 +760,99 @@ mod tests {
             ..info()
         };
         assert!(joined(&run(&silent, &CompressOptions::default())).contains("-an"));
+    }
+
+    #[test]
+    fn aac_already_within_the_bitrate_is_copied() {
+        let aac = |bitrate| MediaInfo {
+            audio_bitrate: Some(bitrate),
+            ..info()
+        };
+        let opts = CompressOptions::default();
+        let plan = run(&aac(96_000), &opts);
+        assert!(joined(&plan).contains("-map 0:a? -c:v"));
+        assert!(joined(&plan).contains("-c:a copy -movflags"));
+        assert!(plan.notes.is_empty());
+        // ffprobe's reading of a 128k encode wanders a little either side.
+        assert!(joined(&run(&aac(131_000), &opts)).contains("-c:a copy"));
+        assert!(joined(&run(&aac(192_000), &opts)).contains("-c:a aac -b:a 128k"));
+
+        let unknown = MediaInfo {
+            audio_bitrate: None,
+            ..info()
+        };
+        assert!(joined(&run(&unknown, &opts)).contains("-c:a aac -b:a 128k"));
+        let mp3 = MediaInfo {
+            audio_codec: Some("mp3".into()),
+            ..aac(96_000)
+        };
+        assert!(joined(&run(&mp3, &opts)).contains("-c:a aac -b:a 128k"));
+        // `-c:a copy` would reach a second track nobody probed.
+        let two_tracks = MediaInfo {
+            audio_tracks: 2,
+            ..aac(96_000)
+        };
+        assert!(joined(&run(&two_tracks, &opts)).contains("-c:a aac -b:a 128k"));
+    }
+
+    #[test]
+    fn mono_gets_half_the_bitrate() {
+        let mono = MediaInfo {
+            audio_codec: Some("pcm_s16le".into()),
+            audio_channels: Some(1),
+            audio_bitrate: Some(768_000),
+            ..info()
+        };
+        assert!(joined(&run(&mono, &CompressOptions::default())).contains("-c:a aac -b:a 64k"));
+        // Also when copying was asked for and MP4 cannot hold the original.
+        let copy = CompressOptions {
+            audio: Audio::Copy,
+            ..Default::default()
+        };
+        assert!(joined(&run(&mono, &copy)).contains("-c:a aac -b:a 64k"));
+
+        let small = MediaInfo {
+            audio_codec: Some("aac".into()),
+            audio_bitrate: Some(64_000),
+            ..mono.clone()
+        };
+        assert!(joined(&run(&small, &CompressOptions::default())).contains("-c:a copy"));
+        let large = MediaInfo {
+            audio_bitrate: Some(96_000),
+            ..small.clone()
+        };
+        assert!(joined(&run(&large, &CompressOptions::default())).contains("-b:a 64k"));
+        // A stereo second track must not be squeezed into 64k.
+        let two_tracks = MediaInfo {
+            audio_tracks: 2,
+            ..mono
+        };
+        assert!(joined(&run(&two_tracks, &CompressOptions::default())).contains("-b:a 128k"));
+    }
+
+    #[test]
+    fn deinterlaces_before_any_other_filter() {
+        let interlaced = MediaInfo {
+            interlaced: true,
+            fps: Some(30000.0 / 1001.0),
+            ..info()
+        };
+        let plan = run(&interlaced, &CompressOptions::default());
+        assert!(joined(&plan).contains("-vf bwdif=mode=send_frame -c:a"));
+        assert!(plan.notes.iter().any(|n| n.contains("deinterlaced")));
+
+        let capped = CompressOptions {
+            max_fps: Some(24),
+            max_resolution: Some(720),
+            ..Default::default()
+        };
+        assert!(joined(&run(&interlaced, &capped))
+            .contains("-vf bwdif=mode=send_frame,fps=24,scale=-2:720"));
+        // On the CPU before the frames go up to the GPU.
+        let vaapi = joined(&run(&interlaced, &hardware(Backend::Vaapi)));
+        assert!(vaapi.contains("-vf bwdif=mode=send_frame,format=nv12,hwupload"));
+
+        assert!(!joined(&run(&info(), &CompressOptions::default())).contains("bwdif"));
     }
 
     #[test]
@@ -913,6 +1068,30 @@ mod tests {
         ));
         assert!(joined(&run(&info(), &slow(Backend::Qsv)))
             .contains("-c:v hevc_qsv -preset slow -global_quality 25"));
+    }
+
+    #[test]
+    fn content_tunes_the_software_encoders_only() {
+        let animation = CompressOptions {
+            content: Content::Animation,
+            ..Default::default()
+        };
+        assert!(joined(&run(&info(), &animation))
+            .contains("-c:v libx265 -preset medium -crf 28 -tune animation -tag:v hvc1"));
+        let grain = CompressOptions {
+            codec: Codec::H264,
+            content: Content::Grain,
+            ..Default::default()
+        };
+        assert!(joined(&run(&info(), &grain))
+            .contains("-c:v libx264 -preset medium -crf 23 -tune grain -pix_fmt"));
+        assert!(!joined(&run(&info(), &CompressOptions::default())).contains("-tune"));
+        // VideoToolbox has no tunings; the setting is moot there.
+        let hardware = CompressOptions {
+            content: Content::Animation,
+            ..hardware(Backend::Videotoolbox)
+        };
+        assert!(!joined(&run(&info(), &hardware)).contains("-tune"));
     }
 
     #[test]

@@ -35,6 +35,11 @@ export interface Entry {
   output: string | null;
   outputBytes: number | null;
   elapsedSecs: number | null;
+  /**
+   * Done, but the encode came out no smaller than the original beside it and
+   * was discarded. `outputBytes` is what it came to.
+   */
+  keptOriginal: boolean;
 }
 
 export function fromProbe(item: QueueItem): Entry {
@@ -49,6 +54,7 @@ export function fromProbe(item: QueueItem): Entry {
     output: null,
     outputBytes: null,
     elapsedSecs: null,
+    keptOriginal: false,
   };
 }
 
@@ -107,6 +113,7 @@ export function markQueued(entries: Entry[], paths: Set<string>): Entry[] {
           output: null,
           outputBytes: null,
           elapsedSecs: null,
+          keptOriginal: false,
         }
       : e,
   );
@@ -148,6 +155,17 @@ export function applyEvent(entries: Entry[], event: CompressEvent): Entry[] {
           output: event.output,
           outputBytes: event.outputBytes,
           elapsedSecs: event.elapsedSecs,
+          keptOriginal: false,
+        };
+      case 'keptOriginal':
+        return {
+          ...e,
+          status: 'done',
+          fraction: 1,
+          output: null,
+          outputBytes: event.outputBytes,
+          elapsedSecs: event.elapsedSecs,
+          keptOriginal: true,
         };
       case 'failed':
         return { ...e, status: 'failed', error: event.message, fraction: null };

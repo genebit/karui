@@ -287,17 +287,25 @@ export default function Page() {
         summary.succeeded > 0
           ? `${formatBytes(summary.inputBytes)} → ${formatBytes(summary.outputBytes)} (${formatChange(summary.inputBytes, summary.outputBytes)})`
           : undefined;
+      const kept =
+        summary.kept > 0
+          ? `${plural(summary.kept, 'original')} kept, already as small`
+          : undefined;
+      const detail = [saved, kept].filter(Boolean).join(' · ') || undefined;
       if (summary.failed > 0) {
-        notify.error(`${plural(summary.failed, 'video')} failed`, saved);
+        notify.error(`${plural(summary.failed, 'video')} failed`, detail);
       } else if (summary.cancelled > 0) {
-        notify.info('Stopped', saved);
+        notify.info('Stopped', detail);
+      } else if (summary.succeeded > 0) {
+        notify.success(`Compressed ${plural(summary.succeeded, 'video')}`, detail);
       } else {
-        notify.success(`Compressed ${plural(summary.succeeded, 'video')}`, saved);
+        notify.info('Nothing to shrink', kept);
       }
       log(
         'info',
         `Batch finished in ${formatDuration(summary.elapsedSecs)}: ${summary.succeeded} done, ` +
-          `${summary.failed} failed, ${summary.cancelled} cancelled`,
+          `${summary.kept} kept as they were, ${summary.failed} failed, ` +
+          `${summary.cancelled} cancelled`,
       );
     },
     [log],
@@ -310,7 +318,10 @@ export default function Page() {
       const payload = event.payload;
       setEntries((current) => applyEvent(current, payload));
       setMonitor((current) => record(current, payload));
-      if (payload.type === 'finished' && payload.pixelsPerSec !== null) {
+      if (
+        (payload.type === 'finished' || payload.type === 'keptOriginal') &&
+        payload.pixelsPerSec !== null
+      ) {
         setLearnt((n) => n + 1);
       }
       if (payload.type === 'done') {
@@ -469,7 +480,7 @@ export default function Page() {
   const sizeCache = useRef(new Map<string, number | null>());
   const [sizeVersion, setSizeVersion] = useState(0);
   const [sizing, setSizing] = useState<string | null>(null);
-  const sizeKey = JSON.stringify([timingKey, options.audio]);
+  const sizeKey = JSON.stringify([timingKey, options.audio, options.content]);
   const sizeOf = (path: string) => sizeCache.current.get(`${sizeKey}\n${path}`);
   // One file at a time, in list order: the samples are encodes, and two
   // at once would only slow each other and any preview.
@@ -615,9 +626,11 @@ export default function Page() {
   }
 
   const done = entries.filter((e) => e.status === 'done');
+  // A kept original wrote nothing, so it saved nothing either.
+  const written = done.filter((e) => !e.keptOriginal);
   const totalBytes = entries.reduce((sum, e) => sum + (e.info?.sizeBytes ?? 0), 0);
-  const doneIn = done.reduce((sum, e) => sum + (e.info?.sizeBytes ?? 0), 0);
-  const doneOut = done.reduce((sum, e) => sum + (e.outputBytes ?? 0), 0);
+  const doneIn = written.reduce((sum, e) => sum + (e.info?.sizeBytes ?? 0), 0);
+  const doneOut = written.reduce((sum, e) => sum + (e.outputBytes ?? 0), 0);
 
   return (
     <div className="flex h-full">
@@ -664,7 +677,7 @@ export default function Page() {
 
           <span className="text-muted-foreground truncate font-mono text-[11px]">
             {entries.length > 0 && `${plural(entries.length, 'video')} · ${formatBytes(totalBytes)}`}
-            {done.length > 0 &&
+            {written.length > 0 &&
               ` · saved ${formatBytes(Math.max(doneIn - doneOut, 0))} (${formatChange(doneIn, doneOut)})`}
             {timed &&
               ` · ${formatEstimate(remainingSecs)} ${running ? 'left' : 'to compress'}`}

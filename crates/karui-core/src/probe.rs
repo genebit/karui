@@ -36,6 +36,17 @@ pub struct MediaInfo {
     /// Sizes the output when audio is copied.
     #[serde(default)]
     pub audio_bitrate: Option<u64>,
+    /// Channels in that audio stream: 1 for a lapel mic, 2 for most phones.
+    #[serde(default)]
+    pub audio_channels: Option<u32>,
+    /// How many audio streams the file has. `-b:a` and `-c:a` reach all of
+    /// them, so per-track decisions are only made when there is one.
+    #[serde(default)]
+    pub audio_tracks: u32,
+    /// Fields rather than frames, as AVCHD cameras and broadcast recordings
+    /// store 1080i.
+    #[serde(default)]
+    pub interlaced: bool,
 }
 
 impl MediaInfo {
@@ -162,6 +173,8 @@ struct Stream {
     r_frame_rate: Option<String>,
     duration: Option<String>,
     bit_rate: Option<String>,
+    channels: Option<u32>,
+    field_order: Option<String>,
     #[serde(default)]
     disposition: Disposition,
     #[serde(default)]
@@ -196,10 +209,12 @@ pub fn parse(json: &str, size_bytes: u64) -> std::result::Result<MediaInfo, Stri
         .iter()
         .find(|s| s.codec_type.as_deref() == Some("video") && s.disposition.attached_pic == 0)
         .ok_or("no video stream")?;
-    let audio = probe
+    let audio_streams: Vec<&Stream> = probe
         .streams
         .iter()
-        .find(|s| s.codec_type.as_deref() == Some("audio"));
+        .filter(|s| s.codec_type.as_deref() == Some("audio"))
+        .collect();
+    let audio = audio_streams.first().copied();
 
     let (width, height) = match (video.width, video.height) {
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
@@ -236,6 +251,15 @@ pub fn parse(json: &str, size_bytes: u64) -> std::result::Result<MediaInfo, Stri
         audio_bitrate: audio
             .and_then(|a| a.bit_rate.as_deref())
             .and_then(|b| b.parse().ok()),
+        audio_channels: audio.and_then(|a| a.channels).filter(|&c| c > 0),
+        audio_tracks: audio_streams.len() as u32,
+        // `tt` and `bb` store one field first and then the other; `tb` and
+        // `bt` are the same with the fields coded the other way round.
+        // `progressive` and `unknown` are left alone.
+        interlaced: matches!(
+            video.field_order.as_deref(),
+            Some("tt" | "bb" | "tb" | "bt")
+        ),
     })
 }
 
@@ -328,6 +352,40 @@ mod tests {
         let silent =
             r#"{"streams": [{"index": 0, "codec_type": "video", "width": 2, "height": 2}]}"#;
         assert_eq!(parse(silent, 1).expect("parse").audio_bitrate, None);
+    }
+
+    #[test]
+    fn counts_audio_tracks_and_reads_the_first_one() {
+        let json = r#"{"streams": [
+            {"index": 0, "codec_type": "video", "width": 1920, "height": 1080},
+            {"index": 1, "codec_type": "audio", "codec_name": "aac", "channels": 1},
+            {"index": 2, "codec_type": "audio", "codec_name": "pcm_s24le", "channels": 2}
+        ]}"#;
+        let info = parse(json, 1).expect("parse");
+        assert_eq!(info.audio_codec.as_deref(), Some("aac"));
+        assert_eq!(info.audio_channels, Some(1));
+        assert_eq!(info.audio_tracks, 2);
+        assert_eq!(parse(PHONE, 1).expect("parse").audio_tracks, 1);
+    }
+
+    #[test]
+    fn reads_interlacing_from_the_field_order() {
+        let clip = |order: &str| {
+            format!(
+                r#"{{"streams": [{{"index": 0, "codec_type": "video", "width": 1920,
+                    "height": 1080, "field_order": "{order}"}}]}}"#
+            )
+        };
+        for order in ["tt", "bb", "tb", "bt"] {
+            assert!(parse(&clip(order), 1).expect("parse").interlaced, "{order}");
+        }
+        for order in ["progressive", "unknown"] {
+            assert!(
+                !parse(&clip(order), 1).expect("parse").interlaced,
+                "{order}"
+            );
+        }
+        assert!(!parse(PHONE, 1).expect("parse").interlaced);
     }
 
     #[test]

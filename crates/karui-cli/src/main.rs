@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use karui_core::batch::{self, Event};
 use karui_core::discover::discover;
-use karui_core::options::{Audio, Codec, CompressOptions, Engine, Preset};
+use karui_core::options::{Audio, Codec, CompressOptions, Content, Engine, Preset};
 use karui_core::plan::plan_for;
 use karui_core::probe::probe;
 use karui_core::tools::{install_hint, Tools};
@@ -58,6 +58,11 @@ enum Command {
         #[arg(long, default_value_t = Preset::default())]
         preset: Preset,
 
+        /// general, animation (also screen recordings), or grain. Tunes the
+        /// software encoders; hardware ones ignore it.
+        #[arg(long, default_value_t = Content::default())]
+        content: Content,
+
         /// Lower the frame rate to this when the source is faster.
         #[arg(long)]
         max_fps: Option<u32>,
@@ -66,7 +71,8 @@ enum Command {
         #[arg(long)]
         max_res: Option<u32>,
 
-        /// aac, copy, or remove.
+        /// aac (128k, 64k for mono; AAC already that small is copied),
+        /// copy, or remove.
         #[arg(long, default_value_t = Audio::default())]
         audio: Audio,
 
@@ -124,6 +130,7 @@ fn run(command: Command) -> karui_core::Result<ExitCode> {
             codec,
             crf,
             preset,
+            content,
             max_fps,
             max_res,
             audio,
@@ -139,6 +146,7 @@ fn run(command: Command) -> karui_core::Result<ExitCode> {
                 hardware: None,
                 crf,
                 preset,
+                content,
                 max_fps,
                 max_resolution: max_res,
                 audio,
@@ -265,14 +273,26 @@ fn compress(
                 units::duration(elapsed_secs),
             );
         }
+        Event::KeptOriginal {
+            input_bytes,
+            output_bytes,
+            ..
+        } => {
+            eprintln!(
+                "{CLEAR}      kept the original: compressed it came to {} ({})",
+                units::bytes(output_bytes),
+                units::change(input_bytes, output_bytes),
+            );
+        }
         Event::Failed { message, .. } => eprintln!("{CLEAR}      failed: {message}"),
         Event::Cancelled { .. } => eprintln!("{CLEAR}      cancelled"),
         Event::Done { .. } => {}
     });
 
     eprintln!(
-        "\n{} done, {} failed, {} cancelled · {} → {} ({}) in {}",
+        "\n{} done, {} kept as they were, {} failed, {} cancelled · {} → {} ({}) in {}",
         summary.succeeded,
+        summary.kept,
         summary.failed,
         summary.cancelled,
         units::bytes(summary.input_bytes),

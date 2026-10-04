@@ -28,10 +28,12 @@ saved.
 - **Safe outputs.** It never writes over a source. Outputs go beside each
   original as `name-compressed.mp4`, or into a folder you choose, and are
   numbered instead of replacing an existing file. An interrupted encode leaves
-  nothing behind.
+  nothing behind, and one that comes out no smaller than the original beside
+  it is discarded.
 - **Sensible defaults.** H.265 at CRF 28 with the `hvc1` tag, so QuickTime,
   Safari, and iPhones play it. Portrait phone footage, odd dimensions, 10-bit
-  HDR, and PCM audio are all handled.
+  HDR, interlaced camcorder footage, and PCM audio are all handled. AAC that is
+  already small is copied rather than encoded twice, and mono gets 64 kb/s.
 - **Caps, not conversions.** "Up to 30 fps" and "720p" only reduce. A 24 fps
   film stays at 24 fps, and a 480p clip is not scaled up.
 
@@ -74,9 +76,10 @@ cargo build -p karui-cli --release
 | `--codec h264\|h265` | `h265` | H.265 is about half the size; H.264 plays anywhere. |
 | `--crf <0–51>` | 28 (h265), 23 (h264) | Lower is better quality and larger. |
 | `--preset <name>` | `medium` | `ultrafast` … `veryslow`. Slower makes a smaller file at the same quality. |
+| `--content general\|animation\|grain` | `general` | Tunes x264/x265 for animation and screen recordings, or to keep film grain (larger). |
 | `--max-fps <n>` | source | Lower the frame rate only when the source is faster. |
 | `--max-res <n>` | source | Cap the shorter side, e.g. `720`. |
-| `--audio aac\|copy\|remove` | `aac` | AAC at 128 kb/s, keep as-is (when MP4 can hold it), or drop. |
+| `--audio aac\|copy\|remove` | `aac` | AAC at up to 128 kb/s (64 for mono; AAC already that small is copied), keep as-is (when MP4 can hold it), or drop. |
 | `--overwrite` | off | Replace existing outputs instead of numbering new ones. |
 | `--bell` | off | Ring the terminal bell when the batch ends. |
 

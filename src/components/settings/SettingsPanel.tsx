@@ -20,6 +20,7 @@ import type {
   Audio,
   Codec,
   CompressOptions,
+  Content,
   Engine,
   Preset,
   ToolStatus,
@@ -50,6 +51,20 @@ const PRESETS: { value: Preset; label: string }[] = [
   { value: 'veryslow', label: 'Very slow' },
 ];
 
+const CONTENT: { value: Content; label: string; hint: string }[] = [
+  { value: 'general', label: 'Camera footage', hint: 'The encoder\'s own defaults.' },
+  {
+    value: 'animation',
+    label: 'Animation or screen',
+    hint: 'Flat colour and sharp edges, as in cartoons, motion graphics, and screen recordings.',
+  },
+  {
+    value: 'grain',
+    label: 'Film grain',
+    hint: 'Keeps grain and noise rather than smoothing it away. Larger files.',
+  },
+];
+
 /** `source` stands for `null`: Radix Select needs a non-empty value. */
 const FRAME_RATES = ['source', '60', '30', '25', '24'];
 const RESOLUTIONS = [
@@ -62,7 +77,7 @@ const RESOLUTIONS = [
 ];
 
 const AUDIO: { value: Audio; label: string }[] = [
-  { value: 'aac', label: 'AAC 128k' },
+  { value: 'aac', label: 'AAC, up to 128k' },
   { value: 'copy', label: 'Keep original' },
   { value: 'remove', label: 'Remove' },
 ];
@@ -263,6 +278,30 @@ export const SettingsPanel = memo(function SettingsPanel({
         </p>
       </Field>
 
+      <Field label="Content">
+        <Select
+          value={options.content}
+          disabled={disabled || hardware !== null}
+          onValueChange={(value) => set({ content: value as Content })}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONTENT.map((c) => (
+              <SelectItem key={c.value} value={c.value}>
+                {c.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-muted-foreground text-[10.5px] leading-snug">
+          {hardware
+            ? 'Hardware encoders have no tuning for content.'
+            : CONTENT.find((c) => c.value === options.content)?.hint}
+        </p>
+      </Field>
+
       <div className="grid grid-cols-2 gap-2">
         <Field label="Resolution">
           <Select
@@ -320,6 +359,11 @@ export const SettingsPanel = memo(function SettingsPanel({
             ))}
           </SelectContent>
         </Select>
+        {options.audio === 'aac' && (
+          <p className="text-muted-foreground text-[10.5px] leading-snug">
+            64k for mono. AAC already this small is kept as it is.
+          </p>
+        )}
       </Field>
 
       <Field label="Save to">

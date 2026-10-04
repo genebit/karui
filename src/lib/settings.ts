@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS: Settings = {
     engine: 'software',
     crf: null,
     preset: 'medium',
+    content: 'general',
     maxFps: null,
     maxResolution: null,
     audio: 'aac',
