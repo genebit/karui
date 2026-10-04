@@ -28,6 +28,17 @@ body {
   overflow: hidden;
 }
 
+/* Queue row padding, chosen as row density in the appearance settings. */
+:root {
+  --row-py: 0.75rem;
+}
+:root[data-density='compact'] {
+  --row-py: 0.375rem;
+}
+:root[data-density='relaxed'] {
+  --row-py: 1.125rem;
+}
+
 /* A tool surface, not a document: never rubber-band scroll. */
 #app-root {
   height: 100vh;
@@ -97,8 +108,8 @@ body {
  ---break---
  */
 /*
- * Light tokens. Unused while the app is dark-only, but kept so shadcn
- * components resolve every variable and a light theme is one class away.
+ * Light tokens, used when the appearance settings choose the light theme,
+ * which removes the `dark` class from `<html>`.
  */
 :root {
   --background: #f7f8fa;

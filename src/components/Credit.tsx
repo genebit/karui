@@ -2,8 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { Settings2 } from 'lucide-react';
 
+import { AppearanceDialog } from '@/components/AppearanceDialog';
 import { Logo } from '@/components/Logo';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import { applyAppearance, loadAppearance } from '@/lib/appearance';
 import { currentVersion } from '@/lib/version';
 
 const GITHUB = 'https://github.com/genebit';
@@ -60,12 +65,17 @@ export function Credit() {
  * The application mark, name, and version, at the head of the sidebar.
  *
  * The version is what to quote in a bug report, and what the update prompt
- * compares against, so it is shown where anyone would look for it.
+ * compares against, so it is shown where anyone would look for it. Beside
+ * it, the appearance settings.
  */
 export function Brand() {
   const [version, setVersion] = useState<string | null>(null);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   useEffect(() => {
     void currentVersion().then(setVersion);
+    // The layout's pre-paint script sets the theme and density; zoom needs
+    // the webview, which only this side can reach.
+    applyAppearance(loadAppearance());
   }, []);
 
   return (
@@ -75,9 +85,25 @@ export function Brand() {
       <span className="text-muted-foreground text-xs" lang="ja">
         軽い
       </span>
-      {version && (
-        <span className="text-muted-foreground ml-auto font-mono text-[10px]">v{version}</span>
-      )}
+      <div className="ml-auto flex items-center gap-1.5">
+        {version && (
+          <span className="text-muted-foreground font-mono text-[10px]">v{version}</span>
+        )}
+        {version && (
+          <Separator orientation="vertical" className="h-3.5 data-vertical:self-center" />
+        )}
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          title="Appearance"
+          aria-label="Appearance"
+          onClick={() => setAppearanceOpen(true)}
+          className="text-muted-foreground"
+        >
+          <Settings2 />
+        </Button>
+      </div>
+      <AppearanceDialog open={appearanceOpen} onOpenChange={setAppearanceOpen} />
     </div>
   );
 }

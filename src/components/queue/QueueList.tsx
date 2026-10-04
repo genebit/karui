@@ -193,7 +193,7 @@ const Row = memo(function Row({
     <div
       data-row
       className={cn(
-        'group flex items-start gap-3 border-b border-border py-3 pr-4 pl-1',
+        'group flex items-start gap-3 border-b border-border py-(--row-py) pr-4 pl-1',
         selectable && 'cursor-pointer hover:bg-muted/30',
         selected && 'bg-muted/60 hover:bg-muted/60',
         dragging && 'opacity-40',

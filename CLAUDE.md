@@ -176,8 +176,11 @@ mismatch shows up at runtime. Change both in the same commit. The same goes for
 **Styling**: shadcn/ui (`radix-luma`, base colour `neutral`) on Tailwind v4,
 configured in CSS via `@theme` in `src/app/globals.css` (no
 `tailwind.config.js`). Components in `src/components/ui` are owned by this
-repo, so edit them directly. The app is dark-only, fixed by the `dark` class
-on `<html>`. The chrome is monochrome; colour is reserved for errors and
+repo, so edit them directly. Dark by default; clicking the version label
+opens appearance settings (theme, font size as webview zoom, row density),
+kept in `lib/appearance.ts` and applied before first paint by a script in
+`app/layout.tsx`. Every colour must come from a theme token so both themes
+work. The chrome is monochrome; colour is reserved for errors and
 warnings, plus green for an estimated saving.
 
 **Next.js**: static export only. No route handlers, middleware, server

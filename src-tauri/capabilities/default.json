@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Only what the app actually needs: file and folder pickers, showing an output in the file manager, and opening a link.",
+  "description": "Only what the app actually needs: file and folder pickers, showing an output in the file manager, opening a link, and zooming the window for the font size setting.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:allow-open",
     "opener:allow-open-url",
-    "opener:allow-reveal-item-in-dir"
+    "opener:allow-reveal-item-in-dir",
+    "core:webview:allow-set-webview-zoom"
   ]
 }
