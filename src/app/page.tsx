@@ -33,6 +33,7 @@ import {
   applyEvent,
   markQueued,
   merge,
+  move,
   runnable,
   unqueue,
   withOutputs,
@@ -529,6 +530,10 @@ export default function Page() {
     (path: string) => setEntries((c) => c.filter((e) => e.path !== path)),
     [],
   );
+  const moveEntry = useCallback(
+    (path: string, to: number) => setEntries((c) => move(c, path, to)),
+    [],
+  );
   const selectEntry = useCallback((path: string) => {
     setSelected(path);
     setPreviewCollapsed(false);
@@ -691,6 +696,7 @@ export default function Page() {
             sizing={sizing}
             onRemove={removeEntry}
             onSelect={selectEntry}
+            onMove={moveEntry}
             onAddFiles={onAddFiles}
             onAddFolder={onAddFolder}
           />

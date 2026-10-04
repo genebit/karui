@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import {
   CircleAlert,
@@ -10,6 +10,7 @@ import {
   FileVideo,
   FolderOpen,
   FolderSearch,
+  GripVertical,
   Loader2,
   Timer,
   X,
@@ -104,11 +105,23 @@ function Thumbnail({ entry }: { entry: Entry }) {
           <StatusIcon status={entry.status} />
         </div>
       )}
+      {info?.durationSecs && (
+        // Where a video player puts it, so it reads as the length at a glance.
+        <span
+          className="absolute right-0.5 bottom-0.5 rounded-[3px] bg-black/75 px-1 font-mono text-[9.5px] leading-[1.35] text-white"
+          title={`Length ${formatDuration(info.durationSecs)}`}
+        >
+          {formatDuration(info.durationSecs)}
+        </span>
+      )}
     </div>
   );
 }
 
-/** `1920×1080 · hevc · 29.97 fps · 1:23 · 120.4 MB`, as a player shows it. */
+/**
+ * `1920×1080 · hevc · 29.97 fps · 120.4 MB`, as a player shows it. The length
+ * is on the thumbnail instead.
+ */
 function describe(info: MediaInfo): string {
   const portrait = info.rotation % 180 === 90;
   const [w, h] = portrait ? [info.height, info.width] : [info.width, info.height];
@@ -116,7 +129,6 @@ function describe(info: MediaInfo): string {
     `${w}×${h}`,
     info.videoCodec,
     info.fps ? `${Number(info.fps.toFixed(2))} fps` : null,
-    info.durationSecs ? formatDuration(info.durationSecs) : null,
     formatBytes(info.sizeBytes),
   ]
     .filter(Boolean)
@@ -141,8 +153,12 @@ const Row = memo(function Row({
   basis,
   size,
   sizing,
+  reorderable,
+  dragging,
   onRemove,
   onSelect,
+  onGrab,
+  onNudge,
 }: {
   entry: Entry;
   locked: boolean;
@@ -154,8 +170,16 @@ const Row = memo(function Row({
   size: number | null;
   /** This row's size is being measured now. */
   sizing: boolean;
+  /** Rows can be reordered, which they cannot while a batch runs. */
+  reorderable: boolean;
+  /** This row is being dragged. */
+  dragging: boolean;
   onRemove: (path: string) => void;
   onSelect: (path: string) => void;
+  /** Start dragging this row by its handle. */
+  onGrab: (path: string, event: React.PointerEvent) => void;
+  /** Move this row one place up (`-1`) or down (`1`). */
+  onNudge: (path: string, by: -1 | 1) => void;
 }) {
   const status = STATUS[entry.status];
   // Running rows show the live ETA and finished rows the real time instead.
@@ -167,14 +191,44 @@ const Row = memo(function Row({
 
   return (
     <div
+      data-row
       className={cn(
-        'group flex items-start gap-3 border-b border-border px-4 py-3',
+        'group flex items-start gap-3 border-b border-border py-3 pr-4 pl-1',
         selectable && 'cursor-pointer hover:bg-muted/30',
         selected && 'bg-muted/60 hover:bg-muted/60',
+        dragging && 'opacity-40',
       )}
       onClick={selectable ? () => onSelect(entry.path) : undefined}
       aria-selected={selected}
     >
+      <button
+        type="button"
+        data-handle={entry.path}
+        disabled={!reorderable}
+        aria-label={`Move ${baseName(entry.path)}`}
+        title={
+          reorderable
+            ? 'Drag to change the order, or use ↑ and ↓'
+            : 'Reorder once this batch finishes'
+        }
+        onPointerDown={(event) => onGrab(entry.path, event)}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+          event.preventDefault();
+          onNudge(entry.path, event.key === 'ArrowUp' ? -1 : 1);
+        }}
+        className={cn(
+          'text-muted-foreground mt-2.5 flex h-5 w-3.5 shrink-0 touch-none items-center justify-center rounded-sm',
+          'cursor-grab opacity-0 outline-none group-hover:opacity-100 focus-visible:opacity-100',
+          'focus-visible:ring-ring/50 focus-visible:ring-2 active:cursor-grabbing',
+          'disabled:cursor-default disabled:group-hover:opacity-30',
+          dragging && 'opacity-100',
+        )}
+      >
+        <GripVertical className="size-3.5" />
+      </button>
+
       <Thumbnail entry={entry} />
 
       <div className="min-w-0 flex-1 space-y-1">
@@ -313,6 +367,14 @@ const Row = memo(function Row({
   );
 });
 
+/** Where a dragged row would land. Drawn over the row boundary, not in
+ * the flow, so the list does not shift under the pointer. */
+function DropLine() {
+  return (
+    <div className="bg-primary pointer-events-none absolute inset-x-3 -top-px z-10 h-0.5 rounded-full" />
+  );
+}
+
 export function QueueList({
   entries,
   locked,
@@ -324,6 +386,7 @@ export function QueueList({
   sizing,
   onRemove,
   onSelect,
+  onMove,
   onAddFiles,
   onAddFolder,
 }: {
@@ -342,9 +405,94 @@ export function QueueList({
   sizing: string | null;
   onRemove: (path: string) => void;
   onSelect: (path: string) => void;
+  /** Move `path` to insertion point `to` in the list as it is now. */
+  onMove: (path: string, to: number) => void;
   onAddFiles: () => void;
   onAddFolder: () => void;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  // The row being dragged and where it would land, as an insertion point.
+  const [drag, setDrag] = useState<{ path: string; to: number } | null>(null);
+  // A row moved with the keyboard keeps focus on its handle.
+  const refocus = useRef<string | null>(null);
+
+  // Pointer events rather than HTML drag and drop: with the window's native
+  // file drop enabled, Windows never delivers HTML drag events to the page.
+  const grab = useCallback(
+    (path: string, event: React.PointerEvent) => {
+      if (event.button !== 0 || locked) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const list = listRef.current;
+      if (!list) return;
+      const viewport = list.closest<HTMLElement>('[data-slot="scroll-area-viewport"]');
+      const insertion = (y: number) => {
+        let index = 0;
+        for (const row of list.querySelectorAll<HTMLElement>('[data-row]')) {
+          const box = row.getBoundingClientRect();
+          if (y > box.top + box.height / 2) index++;
+        }
+        return index;
+      };
+
+      let to = insertion(event.clientY);
+      setDrag({ path, to });
+      const onPointerMove = (e: PointerEvent) => {
+        // Near an edge, scroll so rows out of view can be reached.
+        if (viewport) {
+          const box = viewport.getBoundingClientRect();
+          if (e.clientY < box.top + 32) viewport.scrollTop -= 14;
+          else if (e.clientY > box.bottom - 32) viewport.scrollTop += 14;
+        }
+        const next = insertion(e.clientY);
+        if (next !== to) {
+          to = next;
+          setDrag({ path, to });
+        }
+      };
+      const end = (commit: boolean) => {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerCancel);
+        window.removeEventListener('keydown', onKeyDown);
+        setDrag(null);
+        if (commit) onMove(path, to);
+      };
+      const onPointerUp = () => end(true);
+      const onPointerCancel = () => end(false);
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') end(false);
+      };
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerCancel);
+      window.addEventListener('keydown', onKeyDown);
+    },
+    [locked, onMove],
+  );
+
+  const nudge = useCallback(
+    (path: string, by: -1 | 1) => {
+      const index = entriesRef.current.findIndex((e) => e.path === path);
+      if (index < 0) return;
+      refocus.current = path;
+      // Insertion points: one up is `index - 1`, one down is past the next row.
+      onMove(path, by === -1 ? Math.max(0, index - 1) : index + 2);
+    },
+    [onMove],
+  );
+
+  useEffect(() => {
+    const path = refocus.current;
+    if (!path) return;
+    refocus.current = null;
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-handle="${CSS.escape(path)}"]`)
+      ?.focus();
+  }, [entries]);
+
   if (entries.length === 0) {
     return (
       <div className="flex h-full items-center justify-center p-8">
@@ -357,7 +505,8 @@ export function QueueList({
           <div className="space-y-1">
             <div className="text-sm font-medium">Drop videos or folders here</div>
             <div className="text-muted-foreground text-xs">
-              MP4, MOV, MKV, WebM, AVI and more. Folders are read one level deep; camera cards are searched all the way down.
+              MP4, MOV, MKV, WebM, AVI and more. Folders are read one level deep; camera
+              cards are searched all the way down.
             </div>
           </div>
           <div className="flex gap-2">
@@ -377,20 +526,33 @@ export function QueueList({
 
   return (
     <ScrollArea className="h-full">
-      {entries.map((entry) => (
-        <Row
-          key={entry.path}
-          entry={entry}
-          locked={locked}
-          selected={entry.path === selected}
-          estimate={estimates.get(entry.path) ?? null}
-          basis={basis}
-          size={sizes.get(entry.path) ?? null}
-          sizing={entry.path === sizing}
-          onRemove={onRemove}
-          onSelect={onSelect}
-        />
-      ))}
+      <div ref={listRef} className={cn(drag && 'cursor-grabbing select-none')}>
+        {entries.map((entry, index) => (
+          <div key={entry.path} className="relative">
+            {drag?.to === index && <DropLine />}
+            <Row
+              entry={entry}
+              locked={locked}
+              selected={entry.path === selected}
+              estimate={estimates.get(entry.path) ?? null}
+              basis={basis}
+              size={sizes.get(entry.path) ?? null}
+              sizing={entry.path === sizing}
+              reorderable={!locked && entries.length > 1}
+              dragging={drag?.path === entry.path}
+              onRemove={onRemove}
+              onSelect={onSelect}
+              onGrab={grab}
+              onNudge={nudge}
+            />
+          </div>
+        ))}
+        {drag?.to === entries.length && (
+          <div className="relative">
+            <DropLine />
+          </div>
+        )}
+      </div>
       {adding && (
         <div className="text-muted-foreground flex items-center gap-2 px-4 py-3 text-xs">
           <Loader2 className="size-3.5 animate-spin" />

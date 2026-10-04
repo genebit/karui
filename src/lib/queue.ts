@@ -63,6 +63,23 @@ export function isActive(status: Status): boolean {
   return status === 'queued' || status === 'running';
 }
 
+/**
+ * Move `path` to insertion point `to`, counted in the list as it is now:
+ * `0` puts it first and `entries.length` last. The batch compresses in list
+ * order, so this is how the user chooses what goes first.
+ */
+export function move(entries: Entry[], path: string, to: number): Entry[] {
+  const from = entries.findIndex((e) => e.path === path);
+  if (from < 0) return entries;
+  // Taking the entry out shifts everything after it up by one.
+  const target = Math.max(0, Math.min(to > from ? to - 1 : to, entries.length - 1));
+  if (target === from) return entries;
+  const next = [...entries];
+  const [entry] = next.splice(from, 1);
+  next.splice(target, 0, entry);
+  return next;
+}
+
 /** Append items not already queued, keeping the existing order. */
 export function merge(entries: Entry[], items: QueueItem[]): Entry[] {
   const known = new Set(entries.map((e) => e.path));
